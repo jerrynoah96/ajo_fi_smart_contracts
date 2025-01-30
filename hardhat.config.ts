@@ -24,7 +24,7 @@ task("accounts", "Prints the list of accounts", async (taskArgs, hre) => {
 
 const config: HardhatUserConfig = {
   solidity: {
-    version: "0.8.1",
+    version: "0.8.20",
     settings: {
       optimizer: {
         enabled: true,
@@ -33,11 +33,11 @@ const config: HardhatUserConfig = {
     }
   },
   networks: {
-    goerli: {
-      url: process.env.Goerli_url,
-      accounts:
-       {mnemonic: process.env.Mnemonic}
-    },
+    // goerli: {
+    //   url: process.env.Goerli_url,
+    //   accounts:
+    //    {mnemonic: process.env.Mnemonic}
+    // },
   },
   mocha: {
     timeout: 0

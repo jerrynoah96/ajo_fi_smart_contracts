@@ -1,26 +1,6 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.1;
+pragma solidity 0.8.20;
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-
-interface IBentoxBox {
-    function balanceOf(address, address) external view returns (uint256);
-
-    function deposit(
-        IERC20 token_,
-        address from,
-        address to,
-        uint256 amount,
-        uint256 share
-    ) external payable returns (uint256 amountOut, uint256 shareOut);
-
-    function withdraw(
-        IERC20 token_,
-        address from,
-        address to,
-        uint256 amount,
-        uint256 share
-    ) external returns (uint256 amountOut, uint256 shareOut);
-}
 
 contract PurseContract {
     using SafeERC20 for IERC20;
@@ -85,11 +65,6 @@ contract PurseContract {
 
 
     address constant ADMIN = 0x9dc821bc9B379a002E5bD4A1Edf200c19Bc5F9CA;
-
-    //instantiate IBentoxBox on mumbai
-    address constant BENTOBOX_ADDRESS =
-        0xF5BCE5077908a1b7370B9ae04AdC565EBd643966;
-    IBentoxBox bentoBoxInstance = IBentoxBox(BENTOBOX_ADDRESS);
 
     //events
     event PurseCreated(
@@ -194,12 +169,6 @@ contract PurseContract {
             require(_position != userPosition[_members[i]], "position taken");
         }
 
-        tokenInstance.transferFrom(
-            msg.sender,
-            address(this),
-            (purse.required_collateral)
-        );
-        memberToCollateral[msg.sender] = purse.required_collateral;
         members.push(msg.sender); //push member to array of members
         userPosition[msg.sender] = _position;
         positionToUser[_position] = msg.sender;
@@ -210,7 +179,6 @@ contract PurseContract {
         if (members.length == purse.max_member_num) {
             purse.purseState = PurseState.Closed;
             purse.timeStarted = block.timestamp;
-            deposit_funds_to_bentoBox();
         }
     }
 
@@ -330,60 +298,63 @@ contract PurseContract {
         approve_To_Claim_Without_Complete_Votes[_member] = true;
     }
 
-    function deposit_funds_to_bentoBox() internal onlyPurseMember(msg.sender) {
+    function withdrawCollateralAndYields() public onlyPurseMember(msg.sender) {
+        require(block.timestamp >= (purse.timeStarted + (purse.time_interval * members.length)), "till purse rounds are completed");
         require(
-            members.length == purse.max_member_num,
-            "incomplete membership yet"
-        );
-        uint256 MAX_UINT256 = purse.contract_total_collateral_balance;
-        tokenInstance.approve(BENTOBOX_ADDRESS, MAX_UINT256);
-        bentoBoxInstance.deposit(
-            tokenInstance,
-            address(this),
-            address(this),
-            purse.contract_total_collateral_balance,
-            0
+            hasWithdrawnCollateralAndYield[msg.sender] == false,
+            "collateral and yields withdrawn already"
         );
 
-        purse.contract_total_collateral_balance = 0;
+        // calculate the amount of rounds this user missed
+        (, uint256 amountToBeDeducted) = calculateMissedDonationByUser(
+            msg.sender
+        );
+
+        //calculate amount of donatons to user that was missed
+        (, uint256 amountToBeAdded) = calculateMissedDonationForUser(
+            msg.sender
+        );
+
+        // Since we removed BentoBox, we'll just return their collateral without yields
+        uint256 intendedTotalReturnsForUser = purse.required_collateral;
+
+        uint256 finalTotalReturnsToUser = intendedTotalReturnsForUser +
+            amountToBeAdded -
+            amountToBeDeducted;
+
+        hasWithdrawnCollateralAndYield[msg.sender] = true;
+        tokenInstance.transfer(msg.sender, finalTotalReturnsToUser);
     }
 
-    function bentoBox_balance() public view returns (uint256) {
-        uint256 bento_box_balance = bentoBoxInstance.balanceOf(
-            purse._address_of_token,
-            address(this)
-        );
-        return bento_box_balance;
+    // returns current round details, the member who is meant for the round, current round and time before next round-
+    function currentRoundDetails()
+        public
+        view
+        returns (
+            address,
+            uint256,
+            uint256
+        )
+    {
+        require(purse.purseState == PurseState.Closed, "rounds yet to start");
+        // a round should span for the time of "interval" set upon purse creation
+
+        //calculte how many of the "intervals" is passed to get what _position/round
+        uint256 roundPassed = (block.timestamp - purse.timeStarted) /
+            purse.time_interval;
+
+        uint256 currentRound = roundPassed + 1;
+        uint256 timeForNextRound = purse.timeStarted +
+            (currentRound * purse.time_interval);
+
+        //current round is equivalent to position
+        address _member = positionToUser[currentRound];
+
+        return (_member, currentRound, timeForNextRound);
     }
 
-    //any member can call this function
-    function withdraw_funds_from_bentoBox() public onlyPurseMember(msg.sender) {
-      
-        require(block.timestamp >= (purse.timeStarted + (purse.time_interval * members.length)), 'till purse rounds are completed');
-        
-        uint256 bento_box_balance = bentoBoxInstance.balanceOf(
-            purse._address_of_token,
-            address(this)
-        );
-        //bentoBox withdraw functiosn returns 2 values, in this cares, shares will be what has the entire values- our collateral deposits plus yields
-        uint256 shares;
-        uint256 amount;
-        (amount, shares) = bentoBoxInstance.withdraw(
-            tokenInstance,
-            address(this),
-            address(this),
-            0,
-            bento_box_balance
-        );
-        //calculate yields
-        uint256 yields = shares -
-            (purse.required_collateral * purse.max_member_num); //shares will remain total collateral at this point
-        //20% of yields goes to purseFactory admin
-        uint256 yields_to_admin = (yields * 8) / 100;
-        yields_to_members = yields - yields_to_admin;
-        tokenInstance.transfer(ADMIN, yields_to_admin);
-
-        total_returns_to_members = shares - yields_to_admin;
+    function purseMembers() public view returns (address[] memory) {
+        return members;
     }
 
     function calculateMissedDonationForUser(address _memberAdress)
@@ -482,64 +453,5 @@ contract PurseContract {
             trimmed_members_who_member_didnt_donate_for.length *
                 purse.deposit_amount
         );
-    }
-
-    function withdrawCollateralAndYields() public onlyPurseMember(msg.sender) {
-        require(block.timestamp >= (purse.timeStarted + (purse.time_interval * members.length)), 'till purse rounds are completed');
-        require(
-            hasWithdrawnCollateralAndYield[msg.sender] == false,
-            "collateral and yields withdrawn already"
-        );
-
-        // calculate the amount of rounds this user missed
-        (, uint256 amountToBeDeducted) = calculateMissedDonationByUser(
-            msg.sender
-        );
-
-        //calculate amount of donatons to user that was missed
-        (, uint256 amountToBeAdded) = calculateMissedDonationForUser(
-            msg.sender
-        );
-
-        uint256 intendedTotalReturnsForUser = (purse.required_collateral) +
-            (yields_to_members / purse.max_member_num);
-
-        uint256 finalTotalReturnsToUser = intendedTotalReturnsForUser +
-            amountToBeAdded -
-            amountToBeDeducted;
-
-        hasWithdrawnCollateralAndYield[msg.sender] = true;
-        tokenInstance.transfer(msg.sender, finalTotalReturnsToUser);
-    }
-
-    // returns current round details, the member who is meant for the round, current round and time before next round-
-    function currentRoundDetails()
-        public
-        view
-        returns (
-            address,
-            uint256,
-            uint256
-        )
-    {
-        require(purse.purseState == PurseState.Closed, "rounds yet to start");
-        // a round should span for the time of "interval" set upon purse creation
-
-        //calculte how many of the "intervals" is passed to get what _position/round
-        uint256 roundPassed = (block.timestamp - purse.timeStarted) /
-            purse.time_interval;
-
-        uint256 currentRound = roundPassed + 1;
-        uint256 timeForNextRound = purse.timeStarted +
-            (currentRound * purse.time_interval);
-
-        //current round is equivalent to position
-        address _member = positionToUser[currentRound];
-
-        return (_member, currentRound, timeForNextRound);
-    }
-
-    function purseMembers() public view returns (address[] memory) {
-        return members;
     }
 }
