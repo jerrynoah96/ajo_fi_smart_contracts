@@ -1,46 +1,162 @@
-# Advanced Sample Hardhat Project
+# Decentralized Credit-Based Thrift System
 
-This project demonstrates an advanced Hardhat use case, integrating other tools commonly used alongside Hardhat in the ecosystem.
+A blockchain-based thrift (rotating savings) system with credit-based membership and validator governance.
 
-The project comes with a sample contract, a test for that contract, a sample script that deploys that contract, and an example of a task implementation, which simply lists the available accounts. It also comes with a variety of other tools, preconfigured to work with the project code.
+## Overview
 
-Try running some of the following tasks:
+This project implements a decentralized thrift system where users can participate in rotating savings groups based on their credit scores. Credits can be obtained through:
+1. LP token staking
+2. Validator endorsements
+3. Administrative assignments
 
-```shell
-npx hardhat accounts
-npx hardhat compile
-npx hardhat clean
+## Key Features
+
+- Credit-based membership system
+- LP token staking with configurable ratios
+- Validator governance with reputation system
+- Automated rotation and distribution
+- Multiple credit acquisition methods
+
+## Contract Architecture
+
+```
+├── Core Contracts
+│   ├── CreditSystem.sol - Main credit management system
+│   ├── PurseFactory.sol - Factory for creating thrift groups
+│   └── Purse.sol - Individual thrift group logic
+│
+├── Interfaces
+│   └── IPriceOracle.sol - Price feed interface
+│
+└── Mocks (for testing)
+    ├── MockPriceOracle.sol - Mock price feed implementation
+    ├── MockLPToken.sol - Mock LP token for testing
+    └── MockStablecoin.sol - Mock USDC/USDT implementation
+```
+
+## Getting Started
+
+### Prerequisites
+
+- Node.js v14+ and npm
+- Hardhat
+
+### Installation
+
+```bash
+npm install
+```
+
+### Configuration
+
+Create a `.env` file:
+
+```env
+PRIVATE_KEY=your_private_key
+ALCHEMY_API_KEY=your_alchemy_key
+ETHERSCAN_API_KEY=your_etherscan_key
+```
+
+### Running Tests
+
+```bash
+# Run all tests
 npx hardhat test
-npx hardhat node
-npx hardhat help
+
+# Run specific test file
+npx hardhat test test/creditSystem.test.ts
+
+# Run with gas reporting
 REPORT_GAS=true npx hardhat test
+
+# Run with coverage
 npx hardhat coverage
+```
+
+### Deployment
+
+```bash
+# Deploy to local hardhat network
 npx hardhat run scripts/deploy.ts
-TS_NODE_FILES=true npx ts-node scripts/deploy.ts
-npx eslint '**/*.{js,ts}'
-npx eslint '**/*.{js,ts}' --fix
-npx prettier '**/*.{json,sol,md}' --check
-npx prettier '**/*.{json,sol,md}' --write
-npx solhint 'contracts/**/*.sol'
-npx solhint 'contracts/**/*.sol' --fix
+
+# Deploy to testnet
+npx hardhat run scripts/deploy.ts --network goerli
 ```
 
-# Etherscan verification
+## Testing Documentation
 
-To try out Etherscan verification, you first need to deploy a contract to an Ethereum network that's supported by Etherscan, such as Ropsten.
+### Test Structure
 
-In this project, copy the .env.example file to a file named .env, and then edit it to fill in the details. Enter your Etherscan API key, your Ropsten node URL (eg from Alchemy), and the private key of the account which will send the deployment transaction. With a valid .env file in place, first deploy your contract:
-
-```shell
-hardhat run --network ropsten scripts/deploy.ts
+```
+test/
+├── creditSystem.test.ts - Credit system core functionality tests
+├── purse.test.ts - Thrift group functionality tests
+└── test-utils.ts - Testing utilities
 ```
 
-Then, copy the deployment address and paste it in to replace `DEPLOYED_CONTRACT_ADDRESS` in this command:
+### Test Categories
 
-```shell
-npx hardhat verify --network ropsten DEPLOYED_CONTRACT_ADDRESS "Hello, Hardhat!"
+1. Credit System Tests
+   - Validator registration and management
+   - LP token staking and credit calculation
+   - Credit assignment and reduction
+   - Integration with purse creation
+
+2. Purse Tests
+   - Purse creation and membership
+   - Rotation and distribution
+   - Credit requirement validation
+   - Member interactions
+
+3. Integration Tests
+   - End-to-end thrift cycle
+   - Credit-based restrictions
+   - Validator incentives
+
+### Running Specific Test Suites
+
+```bash
+# Run credit system tests
+npx hardhat test test/creditSystem.test.ts
+
+# Run purse tests
+npx hardhat test test/purse.test.ts
+
+# Run with detailed logging
+npx hardhat test --verbose
 ```
 
-# Performance optimizations
+## Security Considerations
 
-For faster runs of your tests and scripts, consider skipping ts-node's type checking by setting the environment variable `TS_NODE_TRANSPILE_ONLY` to `1` in hardhat's environment. For more details see [the documentation](https://hardhat.org/guides/typescript.html#performance-optimizations).
+- All contracts use OpenZeppelin's secure implementations
+- Credit assignments are protected by validator stakes
+- Time-locked operations for LP staking
+- Reputation-based validator system
+- Emergency pause functionality
+
+## Contract Verification
+
+After deployment, verify contracts on Etherscan:
+
+```bash
+npx hardhat verify --network goerli DEPLOYED_CONTRACT_ADDRESS constructor_argument_1 constructor_argument_2
+```
+
+## Performance Optimizations
+
+For faster development:
+```bash
+export TS_NODE_TRANSPILE_ONLY=1
+```
+
+## Contributing
+
+1. Fork the repository
+2. Create your feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a new Pull Request
+
+## License
+
+MIT

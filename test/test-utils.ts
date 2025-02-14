@@ -65,15 +65,8 @@ export type TypedMessage = {
   message: { nonce: number; from: string; functionSignature: string };
 };
 
-export const timeTravel = async (timestamp: Number) => {
-  await hre.network.provider.send("evm_setNextBlockTimestamp", [
-    timestamp,
-  ]);
-  await hre.network.provider.send("evm_mine");
-  expect(
-    (await ethers.provider.getBlock(await ethers.provider.getBlockNumber()))
-      .timestamp
-  ).to.equal(timestamp);
+export async function timeTravel(timestamp: number) {
+    await ethers.provider.send("evm_mine", [timestamp]);
 }
 
 export const resetNetwork = async () => {

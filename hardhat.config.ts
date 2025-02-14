@@ -1,8 +1,7 @@
 import * as dotenv from "dotenv";
-
-import { HardhatUserConfig, task } from "hardhat/config";
-import "@nomiclabs/hardhat-etherscan";
-import "@nomiclabs/hardhat-waffle";
+import { HardhatUserConfig } from "hardhat/config";
+import "@nomicfoundation/hardhat-toolbox";
+import "@nomiclabs/hardhat-ethers";
 import "@typechain/hardhat";
 import "hardhat-gas-reporter";
 import "solidity-coverage";
@@ -33,22 +32,27 @@ const config: HardhatUserConfig = {
     }
   },
   networks: {
-    // goerli: {
-    //   url: process.env.Goerli_url,
-    //   accounts:
-    //    {mnemonic: process.env.Mnemonic}
-    // },
+    hardhat: {
+      forking: {
+        url: "https://eth-mainnet.g.alchemy.com/v2/yvtWF3Uv-oE_1m6Vm_Ib0AJZopQSbpRc",
+        blockNumber: 19000000,
+      },
+    },
+    sepolia: {
+      url: process.env.SEPOLIA_URL || "",
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+    }
   },
-  mocha: {
-    timeout: 0
-  },
-/*  gasReporter: {
+  gasReporter: {
     enabled: process.env.REPORT_GAS !== undefined,
     currency: "USD",
   },
   etherscan: {
     apiKey: process.env.ETHERSCAN_API_KEY,
-  }, */
+  },
+  mocha: {
+    timeout: 100000
+  },
 };
 
 export default config;

@@ -1,22 +1,29 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
 import "./purse.sol";
+import "./interfaces/ICreditSystem.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
+import "./access/Roles.sol";
+import "./interfaces/IValidatorFactory.sol";
 
-contract PurseFactory {
-    event PurseCreated(
-        address _creator,
-        uint256 starting_amount,
-        uint256 max_members,
-        uint256 _time_created,
-        address tokenAddress,
-        address purseAddress
-    );
+contract PurseFactory is AccessControl {
+    event PurseCreated(address indexed purse, address indexed creator);
 
     //0xf0169620C98c21341aBaAeaFB16c69629Dafc06b
     uint256 public purse_count;
     address[] _list_of_purses; //this array contains addresss of each purse
     mapping(address => uint256) id_to_purse;
     mapping(address => uint256) public purseToChatId;
+    
+    ICreditSystem public immutable creditSystem;
+    IValidatorFactory public immutable validatorFactory;
+
+    constructor(address _creditSystem, address _validatorFactory) {
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(Roles.ADMIN_ROLE, msg.sender);
+        creditSystem = ICreditSystem(_creditSystem);
+        validatorFactory = IValidatorFactory(_validatorFactory);
+    }
 
     function createPurse(
         uint256 contribution_amount,
@@ -24,40 +31,41 @@ contract PurseFactory {
         uint256 time_interval,
         uint256 chatId,
         address _tokenAddress,
-        uint8 _position
+        uint8 _position,
+        uint256 _maxDelayTime
     ) public {
+        // Calculate required credits (same as collateral)
+        uint256 _required_credits = contribution_amount * (_max_member - 1);
+        
+        // Check if user has enough credits
+        require(creditSystem.userCredits(msg.sender) >= _required_credits, "Insufficient credits");
+        
+        // Create new purse with maxDelayTime parameter
         PurseContract purse = new PurseContract(
             msg.sender,
             contribution_amount,
             _max_member,
             time_interval,
             _tokenAddress,
-            _position
+            _position,
+            address(creditSystem),
+            address(validatorFactory),
+            _maxDelayTime
         );
-        IERC20 tokenInstance = IERC20(_tokenAddress);
-        uint256 _collateral = contribution_amount * (_max_member - 1);
-        //purse factory contract should be approved
-        require(
-            tokenInstance.transferFrom(
-                msg.sender,
-                address(purse),
-                (_collateral)
-            ),
-            "transfer to purse not successful"
-        );
+
+        // Register the purse with credit system
+        creditSystem.registerPurse(address(purse));
+
+        // Reduce user's credits (this acts as collateral)
+        creditSystem.reduceCredits(msg.sender, _required_credits);
+
+        // Add purse to tracking
         _list_of_purses.push(address(purse));
         purse_count++;
         id_to_purse[address(purse)] = purse_count;
         purseToChatId[address(purse)] = chatId;
 
-        emit PurseCreated(
-            msg.sender,
-            contribution_amount,
-            _max_member,
-            block.timestamp,
-            _tokenAddress,
-            address(purse)
-        );
+        emit PurseCreated(address(purse), msg.sender);
     }
 
     function allPurse() public view returns (address[] memory) {
