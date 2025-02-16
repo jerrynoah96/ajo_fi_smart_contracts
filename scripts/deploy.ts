@@ -13,13 +13,37 @@ async function main() {
   // manually to make sure everything is compiled
   // await hre.run('compile');
 
-  // We get the contract to deploy
-  const Greeter = await ethers.getContractFactory("Greeter");
-  const greeter = await Greeter.deploy("Hello, Hardhat!");
+  // Deploy mock USDC and USDT first
+  const TokenFactory = await ethers.getContractFactory("Token");
+  const usdc = await TokenFactory.deploy();
+  await usdc.deployed();
+  console.log("Mock USDC deployed to:", usdc.address);
 
-  await greeter.deployed();
+  const usdt = await TokenFactory.deploy();
+  await usdt.deployed();
+  console.log("Mock USDT deployed to:", usdt.address);
 
-  console.log("Greeter deployed to:", greeter.address);
+  // Deploy mock price oracle
+  const MockPriceOracleFactory = await ethers.getContractFactory("MockPriceOracle");
+  const priceOracle = await MockPriceOracleFactory.deploy();
+  await priceOracle.deployed();
+  console.log("Mock Price Oracle deployed to:", priceOracle.address);
+
+  // Deploy Credit System
+  const CreditSystemFactory = await ethers.getContractFactory("CreditSystem");
+  const creditSystem = await CreditSystemFactory.deploy(
+    usdc.address,
+    usdt.address,
+    priceOracle.address
+  );
+  await creditSystem.deployed();
+  console.log("Credit System deployed to:", creditSystem.address);
+
+  // Deploy Purse Factory
+  const PurseFactoryFactory = await ethers.getContractFactory("PurseFactory");
+  const purseFactory = await PurseFactoryFactory.deploy(creditSystem.address);
+  await purseFactory.deployed();
+  console.log("Purse Factory deployed to:", purseFactory.address);
 }
 
 // We recommend this pattern to be able to use async/await everywhere
