@@ -2,22 +2,26 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "./interfaces/ICreditSystem.sol";
-import "./interfaces/IValidator.sol";
-import "./Validator.sol";
-import "./access/Roles.sol";
+import '@openzeppelin/contracts/access/AccessControl.sol';
+import '@openzeppelin/contracts/token/ERC20/IERC20.sol';
+import '@openzeppelin/contracts/security/ReentrancyGuard.sol';
+import './interfaces/ICreditSystem.sol';
+import './interfaces/IValidator.sol';
+import './Validator.sol';
+import './access/Roles.sol';
+
+error ValidatorAlreadyRegistered();
+error ValidatorFeeTooHigh();
+error ValidatorInsufficientStake();
 
 contract ValidatorFactory is AccessControl, ReentrancyGuard {
     struct ValidatorConfig {
-        uint256 minStakeAmount;      // Minimum amount validator must stake
-        uint256 maxFeePercentage;    // Maximum fee validator can charge (in basis points)
+        uint256 minStakeAmount; // Minimum amount validator must stake
+        uint256 maxFeePercentage; // Maximum fee validator can charge (in basis points)
     }
 
     ICreditSystem public immutable creditSystem;
-    
+
     ValidatorConfig public config;
     mapping(address => address) public validatorContracts; // validator address => validator contract
     address[] public validatorList;
@@ -40,22 +44,25 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
     ) {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(Roles.ADMIN_ROLE, msg.sender);
-        
+
         creditSystem = ICreditSystem(_creditSystem);
-        
+
         config = ValidatorConfig({
             minStakeAmount: _minStakeAmount,
             maxFeePercentage: _maxFeePercentage
         });
     }
 
-    function createValidator(uint256 _feePercentage, address _tokenToStake) external nonReentrant {
-        require(validatorContracts[msg.sender] == address(0), "Already registered");
-        require(_feePercentage <= config.maxFeePercentage, "Fee too high");
-        require(
-            IERC20(_tokenToStake).balanceOf(msg.sender) >= config.minStakeAmount,
-            "Insufficient stake"
-        );
+    function createValidator(
+        uint256 _feePercentage,
+        address _tokenToStake
+    ) external nonReentrant {
+        if (validatorContracts[msg.sender] != address(0))
+            revert ValidatorAlreadyRegistered();
+        if (_feePercentage > config.maxFeePercentage)
+            revert ValidatorFeeTooHigh();
+        if (IERC20(_tokenToStake).balanceOf(msg.sender) < config.minStakeAmount)
+            revert ValidatorInsufficientStake();
 
         // Deploy new validator contract
         Validator validator = new Validator(
@@ -67,7 +74,11 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
         );
 
         // Transfer stake
-        IERC20(_tokenToStake).transferFrom(msg.sender, address(validator), config.minStakeAmount);
+        IERC20(_tokenToStake).transferFrom(
+            msg.sender,
+            address(validator),
+            config.minStakeAmount
+        );
 
         validatorContracts[msg.sender] = address(validator);
         validatorList.push(msg.sender);
@@ -80,7 +91,9 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
         );
     }
 
-    function getValidatorContract(address _validator) external view returns (address) {
+    function getValidatorContract(
+        address _validator
+    ) external view returns (address) {
         return validatorContracts[_validator];
     }
 
@@ -121,9 +134,6 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
             maxFeePercentage: _maxFeePercentage
         });
 
-        emit ValidatorConfigUpdated(
-            _minStakeAmount,
-            _maxFeePercentage
-        );
+        emit ValidatorConfigUpdated(_minStakeAmount, _maxFeePercentage);
     }
 }

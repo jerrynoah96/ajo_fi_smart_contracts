@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "./access/Roles.sol";
-import "./interfaces/ICreditSystem.sol";
+import '@openzeppelin/contracts/access/AccessControl.sol';
+import '@openzeppelin/contracts/token/ERC20/IERC20.sol';
+import '@openzeppelin/contracts/security/ReentrancyGuard.sol';
+import './access/Roles.sol';
+import './interfaces/ICreditSystem.sol';
+
+error NotOwner();
+error ValidatorNotActive();
+error UserAlreadyValidated();
+error UserNotValidated();
+error OnlyCreditSystem();
+error InsufficientStake();
 
 contract Validator is AccessControl, ReentrancyGuard {
-    uint256 public constant MIN_STAKE_AMOUNT = 1000 ether;  // Should match ValidatorFactory config
+    uint256 public constant MIN_STAKE_AMOUNT = 1000 ether; // Should match ValidatorFactory config
 
     struct ValidatorData {
         address owner;
@@ -20,7 +27,7 @@ contract Validator is AccessControl, ReentrancyGuard {
 
     ValidatorData public data;
     mapping(address => bool) public validatedUsers;
-    
+
     event UserValidated(address indexed user);
     event UserInvalidated(address indexed user);
     event StakeReduced(uint256 amount, string reason);
@@ -28,7 +35,7 @@ contract Validator is AccessControl, ReentrancyGuard {
     ICreditSystem public immutable creditSystem;
 
     modifier onlyOwner() {
-        require(msg.sender == data.owner, "Not owner");
+        if (msg.sender != data.owner) revert NotOwner();
         _;
     }
 
@@ -52,16 +59,16 @@ contract Validator is AccessControl, ReentrancyGuard {
     }
 
     function validateUser(address _user) external onlyOwner {
-        require(data.isActive, "Validator not active");
-        require(!validatedUsers[_user], "User already validated");
-        
+        if (!data.isActive) revert ValidatorNotActive();
+        if (validatedUsers[_user]) revert UserAlreadyValidated();
+
         validatedUsers[_user] = true;
         emit UserValidated(_user);
     }
 
     function invalidateUser(address _user) external onlyOwner {
-        require(validatedUsers[_user], "User not validated");
-        
+        if (!validatedUsers[_user]) revert UserNotValidated();
+
         validatedUsers[_user] = false;
         emit UserInvalidated(_user);
     }
@@ -85,20 +92,20 @@ contract Validator is AccessControl, ReentrancyGuard {
         address recipient,
         uint256 amount
     ) external {
-        require(msg.sender == address(creditSystem), "Only credit system");
-        require(data.isActive, "Validator not active");
-        
+        if (msg.sender != address(creditSystem)) revert OnlyCreditSystem();
+        if (!data.isActive) revert ValidatorNotActive();
+
         // Only reduce stake if defaulter is not the recipient
         if (defaulter != recipient) {
-            require(data.stakedAmount >= amount, "Insufficient stake");
-            
+            if (data.stakedAmount < amount) revert InsufficientStake();
+
             // Reduce stake amount
             data.stakedAmount -= amount;
-            
+
             // Transfer penalty amount to recipient
             IERC20(data.stakedToken).transfer(recipient, amount);
-            
-            emit StakeReduced(amount, "User default");
+
+            emit StakeReduced(amount, 'User default');
 
             // If stake falls below minimum, deactivate validator
             if (data.stakedAmount < MIN_STAKE_AMOUNT) {
@@ -110,4 +117,4 @@ contract Validator is AccessControl, ReentrancyGuard {
     function getValidatorData() external view returns (ValidatorData memory) {
         return data;
     }
-} 
+}
