@@ -4,8 +4,8 @@ pragma solidity 0.8.20;
 import '@openzeppelin/contracts/access/AccessControl.sol';
 import '@openzeppelin/contracts/token/ERC20/IERC20.sol';
 import '@openzeppelin/contracts/security/ReentrancyGuard.sol';
-import './access/Roles.sol';
-import './interfaces/ICreditSystem.sol';
+import '../access/Roles.sol';
+import '../interfaces/ICreditSystem.sol';
 
 error NotOwner();
 error ValidatorNotActive();

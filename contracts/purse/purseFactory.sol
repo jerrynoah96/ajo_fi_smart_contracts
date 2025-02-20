@@ -1,10 +1,10 @@
-// SPDX-License-Identifier: MIT
+ // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
 import './purse.sol';
-import './interfaces/ICreditSystem.sol';
+import '../interfaces/ICreditSystem.sol';
 import '@openzeppelin/contracts/access/AccessControl.sol';
-import './access/Roles.sol';
-import './interfaces/IValidatorFactory.sol';
+import '../access/Roles.sol';
+import '../interfaces/IValidatorFactory.sol';
 
 error NotAuthorizedFactory();
 error InvalidFactoryAddress();

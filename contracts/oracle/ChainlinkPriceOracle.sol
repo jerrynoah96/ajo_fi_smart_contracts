@@ -2,9 +2,9 @@
 pragma solidity 0.8.20;
 
 import '@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol';
-import './interfaces/IPriceOracle.sol';
+import '../interfaces/IPriceOracle.sol';
 import '@openzeppelin/contracts/access/AccessControl.sol';
-import './access/Roles.sol';
+import '../access/Roles.sol';
 
 error InvalidPriceFeed();
 error StalePrice();

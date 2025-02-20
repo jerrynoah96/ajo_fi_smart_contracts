@@ -5,11 +5,11 @@ import '@openzeppelin/contracts/token/ERC20/IERC20.sol';
 import '@openzeppelin/contracts/access/AccessControl.sol';
 import '@openzeppelin/contracts/security/ReentrancyGuard.sol';
 import '@openzeppelin/contracts/security/Pausable.sol';
-import './interfaces/IPriceOracle.sol';
-import './interfaces/ILPToken.sol';
-import './access/Roles.sol';
-import './interfaces/IValidatorFactory.sol';
-import './interfaces/IValidator.sol';
+import '../interfaces/IPriceOracle.sol';
+import '../interfaces/ILPToken.sol';
+import '../access/Roles.sol';
+import '../interfaces/IValidatorFactory.sol';
+import '../interfaces/IValidator.sol';
 
 /// @title Credit System for Purse Protocol
 /// @notice Manages credit allocation through LP staking

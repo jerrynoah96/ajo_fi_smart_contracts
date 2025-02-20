@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
 import '@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol';
-import './interfaces/ICreditSystem.sol';
-import './interfaces/IValidatorFactory.sol';
-import './interfaces/IValidator.sol';
+import '../interfaces/ICreditSystem.sol';
+import '../interfaces/IValidatorFactory.sol';
+import '../interfaces/IValidator.sol';
 import '@openzeppelin/contracts/utils/math/Math.sol';
 import '@openzeppelin/contracts/access/AccessControl.sol';
-import './access/Roles.sol';
+import '../access/Roles.sol';
 
 contract PurseContract is AccessControl {
     using SafeERC20 for IERC20;
