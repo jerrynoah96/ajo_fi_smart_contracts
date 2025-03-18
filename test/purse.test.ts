@@ -111,6 +111,21 @@ describe("PurseContract", () => {
                 purse.connect(member3).joinPurse(3, validatorOwner.address)
             ).to.be.revertedWith("User not validated by validator");
         });
+
+        it("should reduce user credits when joining purse", async () => {
+            // Check initial credits - no need to validate again
+            const initialCredits = await creditSystem.userCredits(member1.address);
+            
+            // Join purse
+            await purse.connect(member1).joinPurse(2, validatorOwner.address);
+            
+            // Check final credits
+            const finalCredits = await creditSystem.userCredits(member1.address);
+            
+            // Verify credits were reduced by requiredCredits
+            const purseData = await purse.purse();
+            expect(initialCredits.sub(finalCredits)).to.equal(purseData.requiredCredits);
+        });
     });
 
     describe("Default Handling", () => {

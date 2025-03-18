@@ -135,6 +135,8 @@ contract PurseContract {
         require(_position > 0 && _position <= purse.maxMembers, "Invalid position");
         require(positionToMember[_position] == address(0), "Position taken");
         require(memberList.length < purse.maxMembers, "Purse full");
+        
+        // Check if user has sufficient credits
         require(creditSystem.userCredits(msg.sender) >= purse.requiredCredits, "Insufficient credits");
         
         require(_validator != address(0), "Validator required");
@@ -151,6 +153,9 @@ contract PurseContract {
         
         // Check if user is validated by the validator
         require(IValidator(validatorContract).isUserValidated(msg.sender), "User not validated by validator");
+
+        // Reduce user's credits BEFORE adding them to the purse
+        creditSystem.reduceCredits(msg.sender, purse.requiredCredits);
 
         members[msg.sender] = Member({
             hasJoined: true,
