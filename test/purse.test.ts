@@ -20,81 +20,90 @@ describe("PurseContract", () => {
     let validatorOwner: SignerWithAddress;
 
     const CONTRIBUTION_AMOUNT = ethers.utils.parseEther("100");
-    const MAX_MEMBERS = 3;
-    const ROUND_INTERVAL = 60 * 60 * 24; // 1 day
-    const MAX_DELAY_TIME = 60 * 60 * 24 * 2; // 2 days
+    const MAX_DELAY_TIME = 86400; // 1 day in seconds
 
     beforeEach(async () => {
         [owner, admin, member1, member2, member3, validatorOwner] = await ethers.getSigners();
 
-        // Deploy token
-        const TokenFactory = await ethers.getContractFactory("Token");
-        token = await TokenFactory.deploy();
+        // Deploy mock token
+        const Token = await ethers.getContractFactory("MockERC20");
+        token = await Token.deploy("Test Token", "TEST", 18);
+        await token.deployed();
 
-        // Deploy price oracle
-        const MockPriceOracleFactory = await ethers.getContractFactory("MockPriceOracle");
-        priceOracle = await MockPriceOracleFactory.deploy();
+        // Deploy mock price oracle
+        const MockPriceOracle = await ethers.getContractFactory("MockPriceOracle");
+        priceOracle = await MockPriceOracle.deploy();
+        await priceOracle.deployed();
 
         // Deploy credit system
-        const CreditSystemFactory = await ethers.getContractFactory("CreditSystem");
-        creditSystem = await CreditSystemFactory.deploy(
-            token.address,
-            token.address,
+        const CreditSystem = await ethers.getContractFactory("CreditSystem");
+        creditSystem = await CreditSystem.deploy(
+            token.address, // USDC
+            token.address, // USDT (using same token for simplicity)
             priceOracle.address,
-            ethers.constants.AddressZero // Temporary zero address
+            ethers.constants.AddressZero // Initial validator factory is zero
         );
+        await creditSystem.deployed();
 
-        // Deploy validator factory
-        const ValidatorFactoryFactory = await ethers.getContractFactory("ValidatorFactory");
-        validatorFactory = await ValidatorFactoryFactory.deploy(
+        // Deploy validator factory with token whitelisted
+        const ValidatorFactory = await ethers.getContractFactory("ValidatorFactory");
+        validatorFactory = await ValidatorFactory.deploy(
             creditSystem.address,
-            ethers.utils.parseUnits("1000", "ether"),
-            1000 // 10% max fee
+            ethers.utils.parseEther("1000"), // Min stake
+            1000, // Max fee percentage (10%)
+            token.address // Default whitelisted token
+        );
+        await validatorFactory.deployed();
+
+        // Update credit system with validator factory
+        await creditSystem.setValidatorFactory(validatorFactory.address);
+
+        // Create validator
+        await token.connect(owner).transfer(validatorOwner.address, ethers.utils.parseEther("2000"));
+        await token.connect(validatorOwner).approve(validatorFactory.address, ethers.utils.parseEther("2000"));
+        
+        await validatorFactory.connect(validatorOwner).createValidator(
+            500, // 5% fee
+            token.address
         );
 
-        // Update credit system's validator factory
-        await creditSystem.connect(owner).setValidatorFactory(validatorFactory.address);
-
-        // Setup validator
-        await token.transfer(validatorOwner.address, ethers.utils.parseUnits("2000", "ether"));
-        await token.connect(validatorOwner).approve(validatorFactory.address, ethers.utils.parseUnits("1000", "ether"));
-        await validatorFactory.connect(validatorOwner).createValidator(500, token.address);
-
-        const validatorAddress = await validatorFactory.getValidatorContract(validatorOwner.address);
+        // Get validator contract address
+        const validatorAddress = await validatorFactory.validatorContracts(validatorOwner.address);
         validator = await ethers.getContractAt("Validator", validatorAddress);
 
-        // Deploy purse
-        const PurseFactory = await ethers.getContractFactory("PurseContract");
-        purse = await PurseFactory.deploy(
+        // Deploy purse contract
+        const PurseContract = await ethers.getContractFactory("PurseContract");
+        purse = await PurseContract.deploy(
             admin.address,
             CONTRIBUTION_AMOUNT,
-            MAX_MEMBERS,
-            ROUND_INTERVAL,
+            3, // max members
+            2592000, // 30 days in seconds
             token.address,
             1, // admin position
             creditSystem.address,
             validatorFactory.address,
             MAX_DELAY_TIME
         );
+        await purse.deployed();
 
-        // Setup credit system roles and permissions
-        await creditSystem.grantRole(ethers.constants.HashZero, owner.address);
-        await creditSystem.connect(owner).authorizeFactory(owner.address);
+        // Register purse with credit system
         await creditSystem.connect(owner).registerPurse(purse.address);
 
         // Fund members with tokens and credits
         for (const member of [member1, member2, member3]) {
-            await token.transfer(member.address, CONTRIBUTION_AMOUNT.mul(MAX_MEMBERS));
-            await token.connect(member).approve(purse.address, CONTRIBUTION_AMOUNT.mul(MAX_MEMBERS));
-            await creditSystem.connect(owner).assignCredits(member.address, CONTRIBUTION_AMOUNT.mul(MAX_MEMBERS));
+            await token.connect(owner).transfer(member.address, CONTRIBUTION_AMOUNT.mul(10));
+            await creditSystem.connect(owner).assignCredits(member.address, CONTRIBUTION_AMOUNT.mul(10));
         }
+
+        // Assign credits to validator owner
+        await creditSystem.connect(owner).assignCredits(validatorOwner.address, ethers.utils.parseEther("1000"));
     });
 
     describe("Joining Purse", () => {
         beforeEach(async () => {
             // Validate members with validator
             for (const member of [member1, member2]) {
-                await validator.connect(validatorOwner).validateUser(member.address);
+                await validator.connect(validatorOwner).validateUser(member.address, ethers.utils.parseEther("100"));
             }
         });
 
@@ -133,7 +142,7 @@ describe("PurseContract", () => {
             // Setup members with validators and link them in credit system
             for (const member of [member1, member2]) {
                 // Validate users with validator
-                await validator.connect(validatorOwner).validateUser(member.address);
+                await validator.connect(validatorOwner).validateUser(member.address, ethers.utils.parseEther("100"));
                 
                 // Link users to validator in credit system
                 await creditSystem.connect(owner).setUserValidator(member.address, validatorOwner.address);
@@ -171,6 +180,45 @@ describe("PurseContract", () => {
             await expect(
                 purse.connect(member1).processDefaultersBatch()
             ).to.be.revertedWith("Only admin can call");
+        });
+
+        it("should allow any user to start resolution after delay time", async () => {
+            // Make contributions except for member2
+            await purse.connect(admin).contribute();
+            await purse.connect(member1).contribute();
+
+            // Advance time past max delay
+            await ethers.provider.send("evm_increaseTime", [MAX_DELAY_TIME + 1]);
+            await ethers.provider.send("evm_mine", []);
+
+            // Non-admin member can start resolution
+            await expect(
+                purse.connect(member1).startResolveRound()
+            ).to.emit(purse, "RoundResolutionStarted")
+             .withArgs(1);
+        });
+
+        it("should process all defaulters automatically when starting resolution", async () => {
+            // Make contributions except for member2
+            await purse.connect(admin).contribute();
+            await purse.connect(member1).contribute();
+
+            const initialValidatorStake = (await validator.getValidatorData()).stakedAmount;
+
+            // Advance time past max delay
+            await ethers.provider.send("evm_increaseTime", [MAX_DELAY_TIME + 1]);
+            await ethers.provider.send("evm_mine", []);
+
+            // Start resolution should process all defaulters
+            await purse.connect(member1).startResolveRound();
+
+            // Verify validator stake was reduced
+            const finalValidatorStake = (await validator.getValidatorData()).stakedAmount;
+            expect(initialValidatorStake.sub(finalValidatorStake)).to.equal(CONTRIBUTION_AMOUNT);
+            
+            // Verify round was completed
+            const currentRound = await purse.getCurrentRound();
+            expect(currentRound.round).to.be.gt(1);
         });
     });
 });

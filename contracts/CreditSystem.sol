@@ -61,6 +61,8 @@ contract CreditSystem is AccessControl, ReentrancyGuard, Pausable {
     event FactoryRegistered(address indexed factory);
     event CreditsAssigned(address indexed from, address indexed to, uint256 amount);
     event ValidatorFactoryUpdated(address indexed oldFactory, address indexed newFactory);
+    event CreditsTransferred(address indexed from, address indexed to, uint256 amount);
+    event UserValidatorSet(address indexed user, address indexed validator);
 
     constructor(
         address _usdc, 
@@ -95,6 +97,7 @@ contract CreditSystem is AccessControl, ReentrancyGuard, Pausable {
         });
     }
 
+    // TODO : update this to just stake whitelisted tokens
     function stakeLPToken(address _lpToken, uint256 _amount) external nonReentrant {
         require(whitelistedPools[_lpToken].isWhitelisted, "LP not whitelisted");
         
@@ -133,20 +136,32 @@ contract CreditSystem is AccessControl, ReentrancyGuard, Pausable {
     }
 
     function assignCredits(address _user, uint256 _amount) external {
-        require(
+        // Check if caller is authorized
+        bool isAuthorized = 
             authorizedFactories[msg.sender] || 
-            hasRole(Roles.ADMIN_ROLE, msg.sender),
-            "Not authorized"
-        );
+            hasRole(Roles.ADMIN_ROLE, msg.sender) ||
+            validatorFactory.isValidatorContract(msg.sender) || 
+            authorizedPurses[msg.sender]; // Purse contract
+        
+        require(isAuthorized, "Not authorized");
+        
         userCredits[_user] += _amount;
         emit CreditsAssigned(msg.sender, _user, _amount);
     }
 
     function reduceCredits(address _user, uint256 _amount) external {
-        require(authorizedFactories[msg.sender] || authorizedPurses[msg.sender], "Not authorized");
+        // Check if caller is authorized
+        bool isAuthorized = 
+            authorizedFactories[msg.sender] || 
+            hasRole(Roles.ADMIN_ROLE, msg.sender) ||
+            validatorFactory.isValidatorContract(msg.sender) || // Validator contract
+            authorizedPurses[msg.sender]; // Purse contract
+        
+        require(isAuthorized, "Not authorized");
         require(userCredits[_user] >= _amount, "Insufficient credits");
+        
         userCredits[_user] -= _amount;
-        emit CreditsReduced(_user, _amount, ""); // Empty reason for normal reduction
+        emit CreditsReduced(_user, _amount, "Manual reduction");
     }
 
     function reduceCreditsForDefault(
@@ -227,13 +242,47 @@ contract CreditSystem is AccessControl, ReentrancyGuard, Pausable {
         emit ValidatorFactoryUpdated(oldFactory, _validatorFactory);
     }
 
-    // Add function to set user's validator
+    // Update the setUserValidator function to check if user is already validated
     function setUserValidator(address _user, address _validator) external {
         require(
             authorizedFactories[msg.sender] || 
+            hasRole(Roles.ADMIN_ROLE, msg.sender) ||
+            validatorFactory.getValidatorContract(msg.sender) != address(0),
+            "Not authorized"
+        );
+        
+        // If user already has a validator, ensure it's being cleared or replaced by the same validator
+        if (userValidators[_user] != address(0) && userValidators[_user] != _validator) {
+            require(
+                _validator == address(0) || // Clearing validator
+                msg.sender == userValidators[_user] || // Current validator updating
+                hasRole(Roles.ADMIN_ROLE, msg.sender), // Admin can override
+                "User already validated by another validator" 
+            );
+        }
+        
+        userValidators[_user] = _validator;
+        emit UserValidatorSet(_user, _validator);
+    }
+
+    // Add a function to check if user is validated by a specific validator
+    function isUserValidatedBy(address _user, address _validator) external view returns (bool) {
+        return userValidators[_user] == _validator;
+    }
+
+    function transferCredits(address _from, address _to, uint256 _amount) external {
+        // Only validators or admin can transfer credits
+        require(
+            validatorFactory.getValidatorContract(msg.sender) != address(0) || 
             hasRole(Roles.ADMIN_ROLE, msg.sender),
             "Not authorized"
         );
-        userValidators[_user] = _validator;
+        
+        require(userCredits[_from] >= _amount, "Insufficient credits");
+        
+        userCredits[_from] -= _amount;
+        userCredits[_to] += _amount;
+        
+        emit CreditsTransferred(_from, _to, _amount);
     }
 } 

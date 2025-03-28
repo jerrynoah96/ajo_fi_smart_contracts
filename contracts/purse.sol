@@ -46,6 +46,9 @@ contract PurseContract {
     ICreditSystem public immutable creditSystem;
     IValidatorFactory public validatorFactory;
     
+    // Add state variable to track penalties
+    uint256 public defaulterPenalties;
+    
     mapping(address => Member) public members;
     address[] public memberList;
     mapping(uint256 => address) public positionToMember;
@@ -65,18 +68,40 @@ contract PurseContract {
     uint256 public defaulterProcessingIndex;
     bool public isProcessingDefaulters;
 
+    // Define custom errors at the contract level
+    error AlreadyMember();
+    error InvalidPosition();
+    error PositionTaken();
+    error PurseFull();
+    error InsufficientCredits();
+    error ValidatorRequired();
+    error InvalidValidator();
+    error ValidatorNotEligible();
+    error UserNotValidated();
+    error InvalidPurseState(PurseState required, PurseState current);
+    error NotMember();
+    error DelayTimeNotExceeded();
+    error AlreadyProcessingDefaulters();
+    error ResolutionNotStarted();
+    error AlreadyContributed();
+    error TooEarlyForContribution();
+    error AlreadyReceivedPayout();
+    error OnlyAdminCanCall();
+    error InvalidInterval();
+    error InvalidContributionAmount();
+
     modifier onlyMember() {
-        require(members[msg.sender].hasJoined, "Not a member");
+        if (!members[msg.sender].hasJoined) revert NotMember();
         _;
     }
 
     modifier inState(PurseState _state) {
-        require(purse.state == _state, "Invalid purse state");
+        if (purse.state != _state) revert InvalidPurseState(_state, purse.state);
         _;
     }
 
     modifier onlyAdmin() {
-        require(msg.sender == purse.admin, "Only admin can call");
+        if (msg.sender != purse.admin) revert OnlyAdminCanCall();
         _;
     }
 
@@ -91,9 +116,9 @@ contract PurseContract {
         address _validatorFactory,
         uint256 _maxDelayTime
     ) {
-        require(_position > 0 && _position <= _max_members, "Invalid position");
-        require(_round_interval > 0, "Invalid interval");
-        require(_contribution_amount > 0, "Invalid contribution amount");
+        if (_position == 0 || _position > _max_members) revert InvalidPosition();
+        if (_round_interval == 0) revert InvalidInterval();
+        if (_contribution_amount == 0) revert InvalidContributionAmount();
         
         creditSystem = ICreditSystem(_creditSystem);
         token = IERC20(_token_address);
@@ -130,33 +155,34 @@ contract PurseContract {
         emit MemberJoined(_admin, _position);
     }
 
-    function joinPurse(uint8 _position, address _validator) external inState(PurseState.Open) {
-        require(!members[msg.sender].hasJoined, "Already a member");
-        require(_position > 0 && _position <= purse.maxMembers, "Invalid position");
-        require(positionToMember[_position] == address(0), "Position taken");
-        require(memberList.length < purse.maxMembers, "Purse full");
+    /**
+     * @notice Allows a user to join the purse
+     * @param _position The position in the rotation the user wants to take
+     * @param _validator The validator address (can be address(0) if validators aren't required)
+     */
+    function joinPurse(uint256 _position, address _validator) external {
+        // Check if user is already a member
+        if (members[msg.sender].hasJoined) revert AlreadyMember();
         
-        // Check if user has sufficient credits
-        require(creditSystem.userCredits(msg.sender) >= purse.requiredCredits, "Insufficient credits");
+        // Check if position is valid
+        if (_position == 0 || _position > purse.maxMembers) revert InvalidPosition();
         
-        require(_validator != address(0), "Validator required");
-        address validatorContract = validatorFactory.getValidatorContract(_validator);
-        require(validatorContract != address(0), "Invalid validator");
+        // Check if position is already taken
+        if (positionToMember[_position] != address(0)) revert PositionTaken();
         
-        // Check if validator's staked token matches purse token
-        address validatorStakedToken = IValidator(validatorContract).getStakedToken();
-        require(validatorStakedToken == purse.tokenAddress, "Validator token mismatch");
+        // Check if user has enough credits
+        if (creditSystem.userCredits(msg.sender) < purse.requiredCredits) revert InsufficientCredits();
         
-        // Check if validator is active
-        IValidator.ValidatorData memory validatorData = IValidator(validatorContract).data();
-        require(validatorData.isActive, "Validator not eligible");
+        // If validator is provided, verify it's valid
+        if (_validator != address(0)) {
+            // Check if user is validated by this validator
+            if (!creditSystem.isUserValidatedBy(msg.sender, _validator)) revert UserNotValidated();
+        }
         
-        // Check if user is validated by the validator
-        require(IValidator(validatorContract).isUserValidated(msg.sender), "User not validated by validator");
-
-        // Reduce user's credits BEFORE adding them to the purse
+        // Reduce user credits
         creditSystem.reduceCredits(msg.sender, purse.requiredCredits);
-
+        
+        // Add user to purse
         members[msg.sender] = Member({
             hasJoined: true,
             position: _position,
@@ -164,25 +190,26 @@ contract PurseContract {
             hasReceivedPayout: false,
             totalContributed: 0,
             lastContributionTime: 0,
-            validator: validatorContract
+            validator: _validator // This can be address(0) if no validator was provided
         });
-
-        memberList.push(msg.sender);
+        
         positionToMember[_position] = msg.sender;
-
+        memberList.push(msg.sender);
+        
+        emit MemberJoined(msg.sender, _position);
+        
+        // If all positions are filled, start the purse
         if (memberList.length == purse.maxMembers) {
             purse.state = PurseState.Active;
             purse.lastContributionTime = block.timestamp;
             emit PurseStateChanged(PurseState.Active);
         }
-
-        emit MemberJoined(msg.sender, _position);
     }
 
     function contribute() external onlyMember inState(PurseState.Active) {
         Member storage member = members[msg.sender];
-        require(!member.hasContributedCurrentRound, "Already contributed this round");
-        require(block.timestamp >= purse.lastContributionTime, "Too early for contribution");
+        if (member.hasContributedCurrentRound) revert AlreadyContributed();
+        if (block.timestamp < purse.lastContributionTime) revert TooEarlyForContribution();
 
         token.safeTransferFrom(msg.sender, address(this), purse.contributionAmount);
         
@@ -195,32 +222,52 @@ contract PurseContract {
 
         // Check if all members have contributed
         if (purse.totalContributions == purse.contributionAmount * purse.maxMembers) {
-            distributePayout();
+            _distributePayout();
         }
     }
 
-    function distributePayout() internal {
-        address payoutMember = positionToMember[purse.currentRound];
-        require(payoutMember != address(0), "Invalid payout position");
+    function _distributePayout() internal {
+        address recipient = positionToMember[purse.currentRound];
+        Member storage member = members[recipient];
+        require(!member.hasReceivedPayout, "Already received payout");
 
-        uint256 totalPayout = purse.totalContributions;
-        purse.totalContributions = 0;
-        
-        // Send remaining payout
-        if (totalPayout > 0) {
-            token.safeTransfer(payoutMember, totalPayout);
+        // Calculate actual payout amount
+        uint256 payoutAmount;
+        if (!member.hasContributedCurrentRound) {
+            // If recipient defaulted, they only get actual contributions
+            payoutAmount = purse.totalContributions;
+        } else {
+            // If recipient contributed, they get all contributions plus penalties
+            payoutAmount = purse.totalContributions + defaulterPenalties;
         }
 
-        emit PayoutDistributed(payoutMember, totalPayout, purse.currentRound);
+        // Transfer payout and update state
+        token.safeTransfer(recipient, payoutAmount);
+        member.hasReceivedPayout = true;
+        
+        emit PayoutDistributed(recipient, payoutAmount, purse.currentRound);
         emit RoundCompleted(purse.currentRound);
 
-        // Update round
+        // Update round state
         if (purse.currentRound == purse.maxMembers) {
             purse.state = PurseState.Completed;
             emit PurseStateChanged(PurseState.Completed);
         } else {
-            purse.currentRound++;
-            purse.lastContributionTime = block.timestamp;
+            startNewRound();
+        }
+    }
+
+    function startNewRound() internal {
+        purse.currentRound++;
+        purse.totalContributions = 0;
+        defaulterPenalties = 0;  // Reset penalties for new round
+        purse.lastContributionTime = block.timestamp;
+
+        // Reset member states for new round
+        for (uint256 i = 0; i < memberList.length; i++) {
+            address memberAddr = memberList[i];
+            members[memberAddr].hasContributedCurrentRound = false;
+            members[memberAddr].hasReceivedPayout = false;
         }
     }
 
@@ -259,20 +306,61 @@ contract PurseContract {
         return memberList;
     }
 
-    function startResolveRound() external onlyAdmin inState(PurseState.Active) {
-        require(
-            block.timestamp >= purse.lastContributionTime + purse.maxDelayTime,
-            "Delay time not exceeded"
-        );
-        require(!isProcessingDefaulters, "Already processing defaulters");
+    // Modified to allow anyone to call and process defaulters automatically
+    function startResolveRound() external inState(PurseState.Active) {
+        if (block.timestamp < purse.lastContributionTime + purse.maxDelayTime) 
+            revert DelayTimeNotExceeded();
+        if (isProcessingDefaulters) revert AlreadyProcessingDefaulters();
 
         isProcessingDefaulters = true;
         defaulterProcessingIndex = 0;
         emit RoundResolutionStarted(purse.currentRound);
+        
+        // Process all defaulters immediately
+        _processAllDefaulters();
     }
 
+    // New function to process all defaulters at once
+    function _processAllDefaulters() internal {
+        address recipient = positionToMember[purse.currentRound];
+        uint256 processedCount = 0;
+
+        for (uint256 i = 0; i < memberList.length; i++) {
+            address memberAddress = memberList[i];
+            Member storage member = members[memberAddress];
+            
+            if (!member.hasContributedCurrentRound) {
+                // Get member's validator
+                address validator = member.validator;
+                if (validator != address(0)) {
+                    // Track penalty before reducing credits
+                    defaulterPenalties += purse.contributionAmount;
+
+                    // Reduce user's credits and validator stake
+                    try creditSystem.reduceCreditsForDefault(
+                        memberAddress,
+                        recipient,
+                        purse.contributionAmount,
+                        validator
+                    ) {
+                        processedCount++;
+                    } catch {
+                        // If the call fails, continue processing other defaulters
+                        continue;
+                    }
+                }
+            }
+        }
+
+        emit BatchProcessed(processedCount, memberList.length, memberList.length);
+        
+        // Finalize round resolution
+        finalizeRoundResolution();
+    }
+
+    // Keep this for backward compatibility but make it admin-only
     function processDefaultersBatch() external onlyAdmin {
-        require(isProcessingDefaulters, "Resolution not started");
+        if (!isProcessingDefaulters) revert ResolutionNotStarted();
         
         uint256 batchEnd = Math.min(
             defaulterProcessingIndex + MAX_DEFAULTERS_PER_BATCH,
@@ -280,7 +368,7 @@ contract PurseContract {
         );
 
         address recipient = positionToMember[purse.currentRound];
-        uint256 processedCount = 0;  // Add counter for processed defaulters
+        uint256 processedCount = 0;
 
         for (uint256 i = defaulterProcessingIndex; i < batchEnd; i++) {
             address memberAddress = memberList[i];
@@ -289,16 +377,23 @@ contract PurseContract {
             if (!member.hasContributedCurrentRound) {
                 // Get member's validator
                 address validator = member.validator;
-                require(validator != address(0), "No validator found");
+                if (validator != address(0)) {
+                    // Track penalty before reducing credits
+                    defaulterPenalties += purse.contributionAmount;
 
-                // Reduce user's credits and validator stake
-                creditSystem.reduceCreditsForDefault(
-                    memberAddress,
-                    recipient,
-                    purse.contributionAmount,
-                    validator
-                );
-                processedCount++;  // Increment counter when defaulter is processed
+                    // Reduce user's credits and validator stake
+                    try creditSystem.reduceCreditsForDefault(
+                        memberAddress,
+                        recipient,
+                        purse.contributionAmount,
+                        validator
+                    ) {
+                        processedCount++;
+                    } catch {
+                        // If the call fails, continue processing other defaulters
+                        continue;
+                    }
+                }
             }
         }
 
@@ -312,11 +407,11 @@ contract PurseContract {
     }
 
     function finalizeRoundResolution() internal {
-        require(isProcessingDefaulters, "Resolution not started");
+        if (!isProcessingDefaulters) revert ResolutionNotStarted();
         
         // Distribute payout if there are any contributions
         if (purse.totalContributions > 0) {
-            distributePayout();
+            _distributePayout();
         }
         
         // Reset processing state

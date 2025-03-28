@@ -20,4 +20,9 @@ interface ICreditSystem {
         uint256 _amount,
         address _validator
     ) external;
+
+    function transferCredits(address from, address to, uint256 amount) external;
+
+    function userValidators(address user) external view returns (address);
+    function isUserValidatedBy(address user, address validator) external view returns (bool);
 } 

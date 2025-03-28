@@ -24,4 +24,5 @@ interface IValidatorFactory {
     function createValidator(uint256 feePercentage, address tokenToStake) external;
     function getActiveValidators() external view returns (address[] memory);
     function config() external view returns (ValidatorConfig memory);
+    function isValidatorContract(address _contract) external view returns (bool);
 }

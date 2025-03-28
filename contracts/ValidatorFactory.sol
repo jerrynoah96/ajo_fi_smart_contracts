@@ -21,6 +21,7 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
     ValidatorConfig public config;
     mapping(address => address) public validatorContracts; // validator address => validator contract
     address[] public validatorList;
+    mapping(address => bool) public whitelistedTokens;
 
     event ValidatorCreated(
         address indexed validator,
@@ -32,11 +33,14 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
         uint256 minStakeAmount,
         uint256 maxFeePercentage
     );
+    event ValidatorCredited(address indexed validator, uint256 amount);
+    event TokenWhitelisted(address indexed token, bool status);
 
     constructor(
         address _creditSystem,
         uint256 _minStakeAmount,
-        uint256 _maxFeePercentage
+        uint256 _maxFeePercentage,
+        address _defaultToken
     ) {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(Roles.ADMIN_ROLE, msg.sender);
@@ -47,19 +51,22 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
             minStakeAmount: _minStakeAmount,
             maxFeePercentage: _maxFeePercentage
         });
+        
+        // Whitelist default token
+        if (_defaultToken != address(0)) {
+            whitelistedTokens[_defaultToken] = true;
+            emit TokenWhitelisted(_defaultToken, true);
+        }
     }
 
     function createValidator(uint256 _feePercentage, address _tokenToStake) external nonReentrant {
-        require(validatorContracts[msg.sender] == address(0), "Already registered");
-        require(_feePercentage <= config.maxFeePercentage, "Fee too high");
-        require(
-            IERC20(_tokenToStake).balanceOf(msg.sender) >= config.minStakeAmount,
-            "Insufficient stake"
-        );
+        if (validatorContracts[msg.sender] != address(0)) revert AlreadyRegistered();
+        if (_feePercentage > config.maxFeePercentage) revert FeeTooHigh();
+        if (IERC20(_tokenToStake).balanceOf(msg.sender) < config.minStakeAmount) revert InsufficientStake();
+        if (!whitelistedTokens[_tokenToStake]) revert TokenNotWhitelisted();
 
-        // Deploy new validator contract
+        // Deploy new validator contract with updated constructor parameters
         Validator validator = new Validator(
-            config.minStakeAmount,
             _feePercentage,
             _tokenToStake,
             msg.sender,
@@ -68,6 +75,10 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
 
         // Transfer stake
         IERC20(_tokenToStake).transferFrom(msg.sender, address(validator), config.minStakeAmount);
+        
+        // Assign credits to validator with 1:1 ratio (100% of stake as credits)
+        uint256 creditAmount = config.minStakeAmount; // 1:1 ratio
+        creditSystem.assignCredits(msg.sender, creditAmount);
 
         validatorContracts[msg.sender] = address(validator);
         validatorList.push(msg.sender);
@@ -78,6 +89,7 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
             config.minStakeAmount,
             _feePercentage
         );
+        emit ValidatorCredited(msg.sender, creditAmount);
     }
 
     function getValidatorContract(address _validator) external view returns (address) {
@@ -85,30 +97,16 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
     }
 
     function getActiveValidators() external view returns (address[] memory) {
-        uint256 activeCount = 0;
+        // Since we removed the isActive flag, all validators in the list are considered active
+        address[] memory activeValidators = new address[](validatorList.length);
+        
         for (uint256 i = 0; i < validatorList.length; i++) {
             address validatorContract = validatorContracts[validatorList[i]];
             if (validatorContract != address(0)) {
-                IValidator validator = IValidator(validatorContract);
-                if (validator.data().isActive) {
-                    activeCount++;
-                }
+                activeValidators[i] = validatorList[i];
             }
         }
-
-        address[] memory activeValidators = new address[](activeCount);
-        uint256 index = 0;
-        for (uint256 i = 0; i < validatorList.length; i++) {
-            address validatorContract = validatorContracts[validatorList[i]];
-            if (validatorContract != address(0)) {
-                IValidator validator = IValidator(validatorContract);
-                if (validator.data().isActive) {
-                    activeValidators[index] = validatorList[i];
-                    index++;
-                }
-            }
-        }
-
+        
         return activeValidators;
     }
 
@@ -126,4 +124,24 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
             _maxFeePercentage
         );
     }
+
+    function setTokenWhitelist(address _token, bool _status) external onlyRole(Roles.ADMIN_ROLE) {
+        whitelistedTokens[_token] = _status;
+        emit TokenWhitelisted(_token, _status);
+    }
+
+    function isValidatorContract(address _contract) external view returns (bool) {
+        // Check if this contract is in our list of deployed validators
+        for (uint256 i = 0; i < validatorList.length; i++) {
+            if (validatorContracts[validatorList[i]] == _contract) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    error AlreadyRegistered();
+    error FeeTooHigh();
+    error InsufficientStake();
+    error TokenNotWhitelisted();
 }

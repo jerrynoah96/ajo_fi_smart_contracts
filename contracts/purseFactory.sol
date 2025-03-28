@@ -23,7 +23,11 @@ contract PurseFactory is AccessControl {
         _grantRole(Roles.ADMIN_ROLE, msg.sender);
         creditSystem = ICreditSystem(_creditSystem);
         validatorFactory = IValidatorFactory(_validatorFactory);
+        // Make sure the PurseFactory is authorized in the CreditSystem
+        // This should be done by the admin after deployment
     }
+
+    // TODO : creator should have the needed checks for validator and should to join purse without validtor 
 
     function createPurse(
         uint256 contribution_amount,
@@ -39,6 +43,9 @@ contract PurseFactory is AccessControl {
         
         // Check if user has enough credits
         require(creditSystem.userCredits(msg.sender) >= _required_credits, "Insufficient credits");
+
+        // Reduce user's credits (this acts as collateral)
+        creditSystem.reduceCredits(msg.sender, _required_credits);
         
         // Create new purse with maxDelayTime parameter
         PurseContract purse = new PurseContract(
@@ -55,9 +62,6 @@ contract PurseFactory is AccessControl {
 
         // Register the purse with credit system
         creditSystem.registerPurse(address(purse));
-
-        // Reduce user's credits (this acts as collateral)
-        creditSystem.reduceCredits(msg.sender, _required_credits);
 
         // Add purse to tracking
         _list_of_purses.push(address(purse));

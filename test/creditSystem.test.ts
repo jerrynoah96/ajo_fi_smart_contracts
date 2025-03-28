@@ -260,20 +260,17 @@ describe("CreditSystem", () => {
       // Link user to validator in credit system
       await creditSystem.connect(owner).setUserValidator(user.address, validatorOwner.address);
 
-      // The StakeReduced event is not emitted because we're using the same address
-      // for defaulter and recipient. Per the Validator contract's handleDefaulterPenalty function,
-      // stake is only reduced when defaulter != recipient
       await expect(
         creditSystem.connect(mockPurse).reduceCreditsForDefault(
-          user.address,
-          owner.address, 
-          defaultAmount,
-          validatorOwner.address
+            user.address,
+            owner.address, 
+            defaultAmount,
+            validatorOwner.address
         )
       ).to.emit(creditSystem, "CreditsReduced")
        .withArgs(user.address, defaultAmount, "Default penalty")
        .and.to.emit(validator, "StakeReduced")
-       .withArgs(defaultAmount, "User default");
+       .withArgs(defaultAmount, user.address, "User default");
     });
 
     it("should fail for unauthorized purse", async () => {
