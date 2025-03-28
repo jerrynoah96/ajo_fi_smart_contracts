@@ -109,7 +109,7 @@ describe("PurseContract", () => {
         it("should not allow joining without validator validation", async () => {
             await expect(
                 purse.connect(member3).joinPurse(3, validatorOwner.address)
-            ).to.be.revertedWith("User not validated by validator");
+            ).to.be.revertedWithCustomError(purse, "UserNotValidatedByValidator");
         });
     });
 
@@ -144,7 +144,7 @@ describe("PurseContract", () => {
         it("should not allow starting resolution before max delay time", async () => {
             await expect(
                 purse.connect(admin).startResolveRound()
-            ).to.be.revertedWith("Delay time not exceeded");
+            ).to.be.revertedWithCustomError(purse, "DelayTimeNotExceeded");
         });
 
         it("should not allow non-admin to process defaulters", async () => {
@@ -155,7 +155,26 @@ describe("PurseContract", () => {
 
             await expect(
                 purse.connect(member1).processDefaultersBatch()
-            ).to.be.revertedWith("Only admin can call");
+            ).to.be.revertedWithCustomError(purse, "OnlyAdminCanCall");
+        });
+
+        it("should not allow starting resolution when already processing", async () => {
+            await ethers.provider.send("evm_increaseTime", [MAX_DELAY_TIME + 1]);
+            await ethers.provider.send("evm_mine", []);
+
+            await purse.connect(admin).startResolveRound();
+
+            await expect(
+                purse.connect(admin).startResolveRound()
+            ).to.be.revertedWithCustomError(purse, "AlreadyProcessingDefaulters");
+        });
+
+        it("should revert when finalizing resolution that hasn't started", async () => {
+            // We need to call finalizeRoundResolution through another function that calls it
+            // since it's internal. One way is to process all defaulters which triggers finalization
+            await expect(
+                purse.connect(admin).processDefaultersBatch()
+            ).to.be.revertedWithCustomError(purse, "ResolutionNotStarted");
         });
     });
 });

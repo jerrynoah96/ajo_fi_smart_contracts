@@ -1,10 +1,13 @@
-// SPDX-License-Identifier: MIT
+ // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
-import "./purse.sol";
-import "./interfaces/ICreditSystem.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "./access/Roles.sol";
-import "./interfaces/IValidatorFactory.sol";
+import './purse.sol';
+import '../interfaces/ICreditSystem.sol';
+import '@openzeppelin/contracts/access/AccessControl.sol';
+import '../access/Roles.sol';
+import '../interfaces/IValidatorFactory.sol';
+
+error NotAuthorizedFactory();
+error InvalidFactoryAddress();
 
 contract PurseFactory is AccessControl {
     event PurseCreated(address indexed purse, address indexed creator);
@@ -14,7 +17,7 @@ contract PurseFactory is AccessControl {
     address[] _list_of_purses; //this array contains addresss of each purse
     mapping(address => uint256) id_to_purse;
     mapping(address => uint256) public purseToChatId;
-    
+
     ICreditSystem public immutable creditSystem;
     IValidatorFactory public immutable validatorFactory;
 
@@ -36,10 +39,11 @@ contract PurseFactory is AccessControl {
     ) public {
         // Calculate required credits (same as collateral)
         uint256 _required_credits = contribution_amount * (_max_member - 1);
-        
+
         // Check if user has enough credits
-        require(creditSystem.userCredits(msg.sender) >= _required_credits, "Insufficient credits");
-        
+        if (creditSystem.userCredits(msg.sender) < _required_credits)
+            revert PurseContract.InsufficientCredits();
+
         // Create new purse with maxDelayTime parameter
         PurseContract purse = new PurseContract(
             msg.sender,

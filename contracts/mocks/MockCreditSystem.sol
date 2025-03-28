@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "../interfaces/IPriceOracle.sol";
-import "../access/Roles.sol";
+import '@openzeppelin/contracts/access/AccessControl.sol';
+import '../interfaces/IPriceOracle.sol';
+import '../access/Roles.sol';
 
 contract MockCreditSystem is AccessControl {
     IPriceOracle public priceOracle;
@@ -24,9 +24,21 @@ contract MockCreditSystem is AccessControl {
 
     mapping(address => LPPool) public whitelistedPools;
 
-    event LPStaked(address indexed user, address indexed lpToken, uint256 amount, uint256 credits);
+    event LPStaked(
+        address indexed user,
+        address indexed lpToken,
+        uint256 amount,
+        uint256 credits
+    );
     event ValidatorRegistered(address validator);
     event FactoryRegistered(address factory);
+
+    error NotAuthorizedOnlyValidatorOrFactory();
+    error LPTokenNotWhitelisted();
+    error UserAlreadyHasValidator();
+    error InvalidValidatorAddress();
+    error NoValidatorToRemove();
+    error NotAuthorizedForRemoval();
 
     constructor(address _priceOracle) {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
@@ -35,16 +47,19 @@ contract MockCreditSystem is AccessControl {
     }
 
     modifier onlyValidatorOrFactory() {
-        require(
-            hasRole(Roles.VALIDATOR_ROLE, msg.sender) || 
-            hasRole(Roles.FACTORY_ROLE, msg.sender) || 
-            hasRole(Roles.ADMIN_ROLE, msg.sender),
-            "Not authorized: only validator or factory"
-        );
+        if (
+            !hasRole(Roles.VALIDATOR_ROLE, msg.sender) &&
+            !hasRole(Roles.FACTORY_ROLE, msg.sender) &&
+            !hasRole(Roles.ADMIN_ROLE, msg.sender)
+        ) {
+            revert NotAuthorizedOnlyValidatorOrFactory();
+        }
         _;
     }
 
-    function registerPurseFactory(address _factory) external onlyRole(Roles.ADMIN_ROLE) {
+    function registerPurseFactory(
+        address _factory
+    ) external onlyRole(Roles.ADMIN_ROLE) {
         authorizedFactories[_factory] = true;
         emit FactoryRegistered(_factory);
     }
@@ -55,7 +70,7 @@ contract MockCreditSystem is AccessControl {
     }
 
     function registerPurse(address _purse) external {
-        require(authorizedFactories[msg.sender], "Not authorized factory");
+        if (!authorizedFactories[msg.sender]) revert NotAuthorized();
         authorizedPurses[_purse] = true;
     }
 
@@ -73,20 +88,27 @@ contract MockCreditSystem is AccessControl {
         });
     }
 
-    function calculateLPCredits(address lpToken, uint256 amount) public view returns (uint256) {
-        require(whitelistedPools[lpToken].isWhitelisted, "LP token not whitelisted");
-        
+    function calculateLPCredits(
+        address lpToken,
+        uint256 amount
+    ) public view returns (uint256) {
+        if (!whitelistedPools[lpToken].isWhitelisted)
+            revert LPTokenNotWhitelisted();
+
         // Get LP token price from oracle (in 18 decimals)
         uint256 lpPrice = priceOracle.getPrice(lpToken);
-        
+
         // First divide by 1e18 to avoid overflow
         uint256 totalValue = (amount / 1e18) * lpPrice;
-        
+
         // Apply credit ratio (in basis points)
-        uint256 credits = (totalValue * whitelistedPools[lpToken].creditRatio) / 10000;
-        
-        return credits > whitelistedPools[lpToken].maxCreditLimit ? 
-            whitelistedPools[lpToken].maxCreditLimit : credits;
+        uint256 credits = (totalValue * whitelistedPools[lpToken].creditRatio) /
+            10000;
+
+        return
+            credits > whitelistedPools[lpToken].maxCreditLimit
+                ? whitelistedPools[lpToken].maxCreditLimit
+                : credits;
     }
 
     function stakeLPToken(address lpToken, uint256 amount) external {
@@ -95,16 +117,26 @@ contract MockCreditSystem is AccessControl {
         emit LPStaked(msg.sender, lpToken, amount, credits);
     }
 
-    function reduceCredits(address user, uint256 amount) external onlyValidatorOrFactory {
-        require(userCredits[user] >= amount, "Insufficient credits");
+    error InsufficientCredits();
+    error NotAuthorized();
+
+    function reduceCredits(address user, uint256 amount) external {
+        if (!authorizedFactories[msg.sender]) revert NotAuthorized();
+        if (userCredits[user] < amount) revert InsufficientCredits();
         userCredits[user] -= amount;
     }
 
-    function assignCredits(address user, uint256 amount) external onlyValidatorOrFactory {
+    function assignCredits(
+        address user,
+        uint256 amount
+    ) external onlyValidatorOrFactory {
         userCredits[user] += amount;
     }
 
-    function adminAssignCredits(address user, uint256 amount) external onlyRole(Roles.ADMIN_ROLE) {
+    function adminAssignCredits(
+        address user,
+        uint256 amount
+    ) external onlyRole(Roles.ADMIN_ROLE) {
         userCredits[user] += amount;
     }
 
@@ -112,20 +144,25 @@ contract MockCreditSystem is AccessControl {
         return userToValidator[user];
     }
 
-    function setUserValidator(address user, address validator) external onlyValidatorOrFactory {
-        require(userToValidator[user] == address(0), "User already has validator");
-        require(validator != address(0), "Invalid validator address");
+    function setUserValidator(
+        address user,
+        address validator
+    ) external onlyValidatorOrFactory {
+        if (userToValidator[user] != address(0))
+            revert UserAlreadyHasValidator();
+        if (validator == address(0)) revert InvalidValidatorAddress();
         userToValidator[user] = validator;
     }
 
     function removeUserValidator(address user) external {
         address currentValidator = userToValidator[user];
-        require(
-            msg.sender == currentValidator || 
-            hasRole(Roles.ADMIN_ROLE, msg.sender),
-            "Not authorized"
-        );
-        require(currentValidator != address(0), "No validator to remove");
+        if (
+            msg.sender != currentValidator &&
+            !hasRole(Roles.ADMIN_ROLE, msg.sender)
+        ) {
+            revert NotAuthorizedForRemoval();
+        }
+        if (currentValidator == address(0)) revert NoValidatorToRemove();
         delete userToValidator[user];
     }
-} 
+}

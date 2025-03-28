@@ -12,15 +12,17 @@ describe("CreditSystem", () => {
   let factory: SignerWithAddress;
   let token: Contract;
   let lpToken: Contract;
+  let notLPToken: Contract;
   let validatorFactory: Contract;
   let validator: Contract;
   let validatorOwner: SignerWithAddress;
+  let otherUser: SignerWithAddress;
 
   const DECIMALS = 8;
   const INITIAL_PRICE = ethers.utils.parseUnits("2000", 8);
 
   beforeEach(async () => {
-    [owner, user, factory] = await ethers.getSigners();
+    [owner, user, factory, otherUser] = await ethers.getSigners();
 
     // Deploy mock token
     const TokenFactory = await ethers.getContractFactory("Token");
@@ -29,6 +31,10 @@ describe("CreditSystem", () => {
     // Deploy mock LP token
     const MockLPTokenFactory = await ethers.getContractFactory("MockLPToken");
     lpToken = await MockLPTokenFactory.deploy(token.address, token.address);
+
+    // Deploy mock non-LP token
+   
+    notLPToken = await MockLPTokenFactory.deploy(token.address, token.address);
 
     // Deploy price oracle
     const MockPriceOracleFactory = await ethers.getContractFactory("MockPriceOracle");
@@ -105,13 +111,13 @@ describe("CreditSystem", () => {
       expect(stake.amount).to.equal(stakeAmount);
     });
 
-    it("should not allow unstaking before minimum stake time", async () => {
-      const stakeAmount = ethers.utils.parseEther("10");
-      await creditSystem.connect(user).stakeLPToken(lpToken.address, stakeAmount);
+    it("should not allow unstaking before minimum time", async () => {
+      await creditSystem.whitelistLPPool(lpToken.address, 5000, 7 * 24 * 60 * 60, 1000000);
+      await creditSystem.connect(user).stakeLPToken(lpToken.address, 100);
       
       await expect(
         creditSystem.connect(user).unstakeLPToken(lpToken.address)
-      ).to.be.revertedWith("Minimum stake time not met");
+      ).to.be.revertedWithCustomError(creditSystem, "MinimumStakeTimeNotMet");
     });
 
     it("should calculate LP credits correctly", async () => {
@@ -121,6 +127,29 @@ describe("CreditSystem", () => {
       
       const credits = await creditSystem.calculateLPCredits(lpToken.address, stakeAmount);
       expect(credits).to.be.gt(0);
+    });
+
+    it("should revert when LP token is not whitelisted", async () => {
+      await expect(
+        creditSystem.calculateLPCredits(notLPToken.address, 100)
+      ).to.be.revertedWithCustomError(creditSystem, "LPNotWhitelistedForCredits");
+    });
+
+    it("should not allow unstaking with insufficient credits", async () => {
+      const stakeAmount = ethers.utils.parseEther("10");
+      await creditSystem.connect(user).stakeLPToken(lpToken.address, stakeAmount);
+      
+      // Reduce user's credits below the staked amount
+      await creditSystem.connect(owner).authorizeFactory(owner.address);
+      await creditSystem.connect(owner).reduceCredits(user.address, stakeAmount);
+      
+      // Increase time to pass minimum stake time
+      await ethers.provider.send("evm_increaseTime", [7 * 24 * 60 * 60 + 1]);
+      await ethers.provider.send("evm_mine", []);
+
+      await expect(
+        creditSystem.connect(user).unstakeLPToken(lpToken.address)
+      ).to.be.revertedWithCustomError(creditSystem, "InsufficientCredits");
     });
   });
 
@@ -284,7 +313,7 @@ describe("CreditSystem", () => {
           100,
           validatorOwner.address
         )
-      ).to.be.revertedWith("Not authorized purse");
+      ).to.be.revertedWithCustomError(creditSystem, "NotAuthorizedPurse");
     });
 
     it("should fail for invalid validator", async () => {
@@ -299,7 +328,7 @@ describe("CreditSystem", () => {
           100,
           ethers.constants.AddressZero
         )
-      ).to.be.revertedWith("No validator found");
+      ).to.be.revertedWithCustomError(creditSystem, "NoValidatorFound");
     });
   });
 
@@ -331,13 +360,26 @@ describe("CreditSystem", () => {
     it("should not allow setting zero address as validator factory", async () => {
       await expect(
         creditSystem.connect(owner).setValidatorFactory(ethers.constants.AddressZero)
-      ).to.be.revertedWith("Invalid validator factory");
+      ).to.be.revertedWithCustomError(creditSystem, "InvalidValidatorFactory");
     });
 
     it("should not allow setting same address as current validator factory", async () => {
       await expect(
         creditSystem.connect(owner).setValidatorFactory(await creditSystem.validatorFactory())
-      ).to.be.revertedWith("Same validator factory");
+      ).to.be.revertedWithCustomError(creditSystem, "SameValidatorFactory");
+    });
+
+    it("should not allow unauthorized reduction of credits", async () => {
+      await expect(
+        creditSystem.connect(user).reduceCredits(user.address, 100)
+      ).to.be.revertedWithCustomError(creditSystem, "NotAuthorizedFactory");
+    });
+
+    it("should not allow reducing more credits than available", async () => {
+      await creditSystem.connect(owner).authorizeFactory(factory.address);
+      await expect(
+        creditSystem.connect(factory).reduceCredits(user.address, 100)
+      ).to.be.revertedWithCustomError(creditSystem, "InsufficientCredits");
     });
   });
 }); 

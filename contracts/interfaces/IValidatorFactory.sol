@@ -14,14 +14,19 @@ interface IValidatorFactory {
         uint256 stakedAmount,
         uint256 feePercentage
     );
-    
+
     event ValidatorConfigUpdated(
         uint256 minStakeAmount,
         uint256 maxFeePercentage
     );
 
-    function getValidatorContract(address validator) external view returns (address);
-    function createValidator(uint256 feePercentage, address tokenToStake) external;
+    function getValidatorContract(
+        address validator
+    ) external view returns (address);
+    function createValidator(
+        uint256 feePercentage,
+        address tokenToStake
+    ) external;
     function getActiveValidators() external view returns (address[] memory);
     function config() external view returns (ValidatorConfig memory);
 }
