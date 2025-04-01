@@ -16,7 +16,7 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
         uint256 maxFeePercentage;    // Maximum fee validator can charge (in basis points)
     }
 
-    ICreditSystem public immutable creditSystem;
+    ICreditSystem public creditSystem;
     
     ValidatorConfig public config;
     mapping(address => address) public validatorContracts; // validator address => validator contract
@@ -35,6 +35,7 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
     );
     event ValidatorCredited(address indexed validator, uint256 amount);
     event TokenWhitelisted(address indexed token, bool status);
+    event CreditSystemUpdated(address indexed oldSystem, address indexed newSystem);
 
     constructor(
         address _creditSystem,
@@ -59,10 +60,15 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
         }
     }
 
-    function createValidator(uint256 _feePercentage, address _tokenToStake) external nonReentrant {
+    function createValidator(
+        uint256 _feePercentage, 
+        address _tokenToStake, 
+        uint256 _stakeAmount
+    ) external nonReentrant {
         if (validatorContracts[msg.sender] != address(0)) revert AlreadyRegistered();
         if (_feePercentage > config.maxFeePercentage) revert FeeTooHigh();
-        if (IERC20(_tokenToStake).balanceOf(msg.sender) < config.minStakeAmount) revert InsufficientStake();
+        if (_stakeAmount < config.minStakeAmount) revert InsufficientStake();
+        if (IERC20(_tokenToStake).balanceOf(msg.sender) < _stakeAmount) revert InsufficientStake();
         if (!whitelistedTokens[_tokenToStake]) revert TokenNotWhitelisted();
 
         // Deploy new validator contract with updated constructor parameters
@@ -73,11 +79,11 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
             address(creditSystem)
         );
 
-        // Transfer stake
-        IERC20(_tokenToStake).transferFrom(msg.sender, address(validator), config.minStakeAmount);
+        // Transfer stake - using the custom amount, not just the minimum
+        IERC20(_tokenToStake).transferFrom(msg.sender, address(validator), _stakeAmount);
         
         // Assign credits to validator with 1:1 ratio (100% of stake as credits)
-        uint256 creditAmount = config.minStakeAmount; // 1:1 ratio
+        uint256 creditAmount = _stakeAmount; // 1:1 ratio for the full custom stake
         creditSystem.assignCredits(msg.sender, creditAmount);
 
         validatorContracts[msg.sender] = address(validator);
@@ -86,7 +92,7 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
         emit ValidatorCreated(
             msg.sender,
             address(validator),
-            config.minStakeAmount,
+            _stakeAmount,
             _feePercentage
         );
         emit ValidatorCredited(msg.sender, creditAmount);
@@ -138,6 +144,17 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
             }
         }
         return false;
+    }
+
+    /**
+     * @notice Update the credit system address
+     * @param _creditSystem The new credit system address
+     */
+    function updateCreditSystem(address _creditSystem) external onlyRole(Roles.ADMIN_ROLE) {
+        require(_creditSystem != address(0), "Invalid credit system");
+        address oldSystem = address(creditSystem);
+        creditSystem = ICreditSystem(_creditSystem);
+        emit CreditSystemUpdated(oldSystem, _creditSystem);
     }
 
     error AlreadyRegistered();

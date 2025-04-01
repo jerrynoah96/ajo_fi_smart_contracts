@@ -6,6 +6,7 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "./access/Roles.sol";
 import "./interfaces/ICreditSystem.sol";
+import "./interfaces/IValidator.sol";
 
 contract Validator is AccessControl, ReentrancyGuard {
     struct ValidatorData {
@@ -14,8 +15,14 @@ contract Validator is AccessControl, ReentrancyGuard {
         address stakedToken;
     }
 
+    // Define ValidationData struct locally in the Validator contract
+    struct ValidationData {
+        bool isValidated;
+        uint256 creditAmount;
+    }
+
     ValidatorData public data;
-    mapping(address => bool) public validatedUsers;
+    mapping(address => ValidationData) public validatedUsers;
     
     event UserValidated(address indexed user);
     event UserInvalidated(address indexed user);
@@ -48,49 +55,60 @@ contract Validator is AccessControl, ReentrancyGuard {
         creditSystem = ICreditSystem(_creditSystem);
     }
 
-    function validateUser(address _user, uint256 _creditAmount) external onlyOwner {
-        if (validatedUsers[_user]) revert UserAlreadyValidated();
+    function validateUser(address _user, uint256 _amount) external onlyOwner {
+        if (validatedUsers[_user].isValidated) revert UserAlreadyValidated();
         
-        // Check if user is already validated by another validator
-        address currentValidator = creditSystem.userValidators(_user);
-        if (currentValidator != address(0) && currentValidator != data.owner) 
-            revert UserAlreadyValidatedByOther();
-        
-        // Check if validator has enough credits
+        // Ensure the validator has enough credits for this operation
         uint256 validatorCredits = creditSystem.userCredits(data.owner);
-        if (validatorCredits < _creditAmount) revert InsufficientValidatorCredits();
+        if (validatorCredits < _amount) revert InsufficientValidatorCredits();
         
-        // Transfer credits from validator to user
-        creditSystem.transferCredits(data.owner, _user, _creditAmount);
+        // Reduce validator's credits
+        creditSystem.reduceCredits(data.owner, _amount);
         
-        // Set this validator as the user's validator
-        creditSystem.setUserValidator(_user, data.owner);
+        // Assign credits to user
+        creditSystem.assignCredits(_user, _amount);
         
-        validatedUsers[_user] = true;
+        // Record user as validated by this validator
+        creditSystem.setUserValidator(_user, address(this));
+        
+        // Update internal state
+        validatedUsers[_user] = ValidationData({
+            isValidated: true,
+            creditAmount: _amount
+        });
+        
         emit UserValidated(_user);
-        emit CreditsAssignedToUser(_user, _creditAmount);
     }
 
-    function invalidateUser(address _user, uint256 _creditAmount) external onlyOwner {
-        if (!validatedUsers[_user]) revert UserNotValidated();
+    function invalidateUser(address _user) external onlyOwner {
+        if (!validatedUsers[_user].isValidated) revert UserNotValidated();
         
-        // Check if user has enough credits to withdraw
-        uint256 userCredits = creditSystem.userCredits(_user);
-        if (userCredits < _creditAmount) revert InsufficientUserCredits();
+        // Get the original credit amount assigned to this user
+        uint256 originalCreditAmount = validatedUsers[_user].creditAmount;
         
-        // Transfer credits back from user to validator
-        creditSystem.transferCredits(_user, data.owner, _creditAmount);
+        // Get current credit amount for the user
+        uint256 currentCredits = creditSystem.userCredits(_user);
+        
+        // Reduce user credits and give them back to the validator
+        if (currentCredits > 0) {
+            // Reduce user credits up to the originally assigned amount
+            uint256 amountToReduce = originalCreditAmount > currentCredits ? currentCredits : originalCreditAmount;
+            creditSystem.reduceCredits(_user, amountToReduce);
+            
+            // Assign credits back to validator
+            creditSystem.assignCredits(data.owner, amountToReduce);
+        }
         
         // Clear validator relationship
         creditSystem.setUserValidator(_user, address(0));
         
-        validatedUsers[_user] = false;
+        validatedUsers[_user].isValidated = false;
+        validatedUsers[_user].creditAmount = 0;
         emit UserInvalidated(_user);
-        emit CreditsWithdrawnFromUser(_user, _creditAmount);
     }
 
     function isUserValidated(address _user) external view returns (bool) {
-        return validatedUsers[_user];
+        return validatedUsers[_user].isValidated;
     }
 
     function getStakedToken() external view returns (address) {
@@ -112,16 +130,15 @@ contract Validator is AccessControl, ReentrancyGuard {
         
         // Only reduce stake if defaulter is not the recipient
         if (defaulter != recipient) {
-            // Reduce validator credits instead of stake
-            creditSystem.reduceCredits(data.owner, amount);
-            
-            // Transfer penalty amount to recipient
-            IERC20(data.stakedToken).transfer(recipient, amount);
-            
-            emit StakeReduced(amount, defaulter, "User default");
+            // Use the existing reduceStake function
+            reduceStake(amount, recipient, "User default");
         }
     }
 
+    /**
+     * @notice Get data about this validator
+     * @return ValidatorData struct with validator information
+     */
     function getValidatorData() external view returns (ValidatorData memory) {
         return data;
     }
@@ -164,4 +181,16 @@ contract Validator is AccessControl, ReentrancyGuard {
     error UserNotValidated();
     error InsufficientUserCredits();
     error UserAlreadyValidatedByOther();
+
+    function reduceStake(uint256 _amount, address _recipient, string memory _reason) internal {
+        // Check if the validator contract has enough tokens
+        uint256 tokenBalance = IERC20(data.stakedToken).balanceOf(address(this));
+        require(_amount <= tokenBalance, "Amount exceeds token balance");
+        
+        // Transfer tokens to recipient
+        bool success = IERC20(data.stakedToken).transfer(_recipient, _amount);
+        require(success, "Token transfer failed");
+        
+        emit StakeReduced(_amount, _recipient, _reason);
+    }
 } 

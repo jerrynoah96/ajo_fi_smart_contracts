@@ -4,57 +4,53 @@ pragma solidity 0.8.20;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/security/Pausable.sol";
-import "./interfaces/IPriceOracle.sol";
-import "./interfaces/ILPToken.sol";
 import "./access/Roles.sol";
 import "./interfaces/IValidatorFactory.sol";
 import "./interfaces/IValidator.sol";
+import "./interfaces/ITokenRegistry.sol";
 
 /// @title Credit System for Purse Protocol
-/// @notice Manages credit allocation through LP staking
-contract CreditSystem is AccessControl, ReentrancyGuard, Pausable {
-    struct LPPool {
-        bool isWhitelisted;
-        address token0;
-        address token1;
-        uint256 creditRatio; // How much credit per $1 of LP (in basis points)
-        uint256 minStakeTime; // Minimum time LP must be staked
-        uint256 maxCreditLimit; // Maximum credits that can be obtained from this pool
-        uint256 totalStaked;
-        uint256 totalCreditsIssued;
-    }
-
-    struct UserLPStake {
+/// @notice Manages credit allocation through token staking
+contract CreditSystem is AccessControl, ReentrancyGuard {
+    struct UserTokenStake {
         uint256 amount;
         uint256 timestamp;
         uint256 creditsIssued;
+        address token;
+    }
+
+    struct UserPurseCredit {
+        uint256 amount;
+        address validator;
+        bool active;
     }
 
     // State variables
     mapping(address => uint256) public userCredits;
-    mapping(address => LPPool) public whitelistedPools;
-    mapping(address => mapping(address => UserLPStake)) public userLPStakes;
+    mapping(address => mapping(address => UserTokenStake)) public userTokenStakes;
     mapping(address => uint256) public userPurseCount;
     mapping(address => bool) public authorizedPurses;
     mapping(address => bool) public authorizedFactories;
     
-    IERC20 public immutable USDC;
-    IERC20 public immutable USDT;
-    IPriceOracle public priceOracle;
-    
     // Constants
     uint256 public constant MAX_PURSES_PER_USER = 5;
+    uint256 public constant MIN_STAKE_TIME = 1 days;
 
-    // Remove immutable keyword
     IValidatorFactory public validatorFactory;
-
+    ITokenRegistry public tokenRegistry;
+    
     // Add mapping for user-validator relationship
     mapping(address => address) public userValidators;
 
+    // Track credits committed to each purse by each user
+    mapping(address => mapping(address => UserPurseCredit)) public userPurseCredits;
+
+    // Track validator defaulter history
+    mapping(address => mapping(address => uint256)) public validatorDefaulterHistory;
+
     // Events
-    event LPStaked(address indexed user, address indexed lpToken, uint256 amount, uint256 credits);
-    event LPUnstaked(address indexed user, address indexed lpToken, uint256 amount);
+    event TokenStaked(address indexed user, address indexed token, uint256 amount, uint256 credits);
+    event TokenUnstaked(address indexed user, address indexed token, uint256 amount);
     event CreditsReduced(address indexed user, uint256 amount, string reason);
     event PurseJoined(address indexed user, address indexed purse);
     event PurseLeft(address indexed user, address indexed purse);
@@ -63,76 +59,77 @@ contract CreditSystem is AccessControl, ReentrancyGuard, Pausable {
     event ValidatorFactoryUpdated(address indexed oldFactory, address indexed newFactory);
     event CreditsTransferred(address indexed from, address indexed to, uint256 amount);
     event UserValidatorSet(address indexed user, address indexed validator);
+    event AdminCreditTransfer(address indexed from, address indexed to, uint256 amount);
+    event TokenRegistryUpdated(address indexed oldRegistry, address indexed newRegistry);
+    event CreditsCommitted(address indexed user, address indexed purse, uint256 amount, address indexed validator);
+    event DefaultProcessed(address indexed user, address indexed purse, uint256 amount, address indexed validator, address recipient);
+    event CreditsReleased(address indexed user, address indexed purse, uint256 amount, address indexed validator);
+    event DefaulterPenaltyApplied(address indexed user, address indexed validator, uint256 amount);
+    event DefaulterPenaltyFailed(address indexed user, address indexed validator, uint256 amount, bytes reason);
+
+    // Custom errors
+    error NotAuthorizedPurse();
+    error NoValidatorForUser();
+    error InsufficientCommittedCredits();
 
     constructor(
-        address _usdc, 
-        address _usdt, 
-        address _priceOracle,
-        address _validatorFactory
+        address _validatorFactory,
+        address _tokenRegistry
     ) {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(Roles.ADMIN_ROLE, msg.sender);
-        USDC = IERC20(_usdc);
-        USDT = IERC20(_usdt);
-        priceOracle = IPriceOracle(_priceOracle);
         validatorFactory = IValidatorFactory(_validatorFactory);
+        tokenRegistry = ITokenRegistry(_tokenRegistry);
     }
 
-    function whitelistLPPool(
-        address _lpToken,
-        uint256 _creditRatio,
-        uint256 _minStakeTime,
-        uint256 _maxCreditLimit
-    ) external onlyRole(Roles.ADMIN_ROLE) {
-        ILPToken lpToken = ILPToken(_lpToken);
-        whitelistedPools[_lpToken] = LPPool({
-            isWhitelisted: true,
-            token0: lpToken.token0(),
-            token1: lpToken.token1(),
-            creditRatio: _creditRatio,
-            minStakeTime: _minStakeTime,
-            maxCreditLimit: _maxCreditLimit,
-            totalStaked: 0,
-            totalCreditsIssued: 0
-        });
-    }
-
-    // TODO : update this to just stake whitelisted tokens
-    function stakeLPToken(address _lpToken, uint256 _amount) external nonReentrant {
-        require(whitelistedPools[_lpToken].isWhitelisted, "LP not whitelisted");
+    function stakeToken(address _token, uint256 _amount) external nonReentrant {
+        require(tokenRegistry.isTokenWhitelisted(_token), "Token not whitelisted");
         
-        IERC20(_lpToken).transferFrom(msg.sender, address(this), _amount);
+        IERC20(_token).transferFrom(msg.sender, address(this), _amount);
         
-        uint256 creditAmount = calculateLPCredits(_lpToken, _amount);
+        uint256 creditAmount = _amount;
         userCredits[msg.sender] += creditAmount;
-        userLPStakes[msg.sender][_lpToken] = UserLPStake({
+        userTokenStakes[msg.sender][_token] = UserTokenStake({
             amount: _amount,
             timestamp: block.timestamp,
-            creditsIssued: creditAmount
+            creditsIssued: creditAmount,
+            token: _token
         });
         
-        emit LPStaked(msg.sender, _lpToken, _amount, creditAmount);
+        emit TokenStaked(msg.sender, _token, _amount, creditAmount);
     }
 
-    function unstakeLPToken(address _lpToken) external nonReentrant {
-        UserLPStake storage stake = userLPStakes[msg.sender][_lpToken];
+    function unstakeToken(address _token, uint256 _amount) external nonReentrant {
+        UserTokenStake storage stake = userTokenStakes[msg.sender][_token];
         require(stake.amount > 0, "No stake found");
+        
+        if (_amount == 0) {
+            _amount = stake.amount;
+        }
+        
+        require(_amount <= stake.amount, "Amount exceeds stake");
+        
         require(
-            block.timestamp >= stake.timestamp + whitelistedPools[_lpToken].minStakeTime,
+            block.timestamp >= stake.timestamp + MIN_STAKE_TIME,
             "Minimum stake time not met"
         );
 
-        uint256 amount = stake.amount;
-        uint256 creditsIssued = stake.creditsIssued;
-
-        require(userCredits[msg.sender] >= creditsIssued, "Insufficient credits");
+        uint256 creditsToReduce = (stake.creditsIssued * _amount) / stake.amount;
         
-        userCredits[msg.sender] -= creditsIssued;
-        delete userLPStakes[msg.sender][_lpToken];
+        require(userCredits[msg.sender] >= creditsToReduce, "Insufficient credits");
         
-        IERC20(_lpToken).transfer(msg.sender, amount);
+        userCredits[msg.sender] -= creditsToReduce;
         
-        emit LPUnstaked(msg.sender, _lpToken, amount);
+        if (_amount == stake.amount) {
+            delete userTokenStakes[msg.sender][_token];
+        } else {
+            stake.amount -= _amount;
+            stake.creditsIssued -= creditsToReduce;
+        }
+        
+        IERC20(_token).transfer(msg.sender, _amount);
+        
+        emit TokenUnstaked(msg.sender, _token, _amount);
     }
 
     function assignCredits(address _user, uint256 _amount) external {
@@ -187,31 +184,6 @@ contract CreditSystem is AccessControl, ReentrancyGuard, Pausable {
         emit CreditsReduced(_user, _amount, "Default penalty");
     }
 
-    function calculateLPCredits(address _lpToken, uint256 _amount) 
-        public 
-        view 
-        returns (uint256) 
-    {
-        LPPool memory pool = whitelistedPools[_lpToken];
-        require(pool.isWhitelisted, "LP not whitelisted");
-
-        ILPToken lpToken = ILPToken(_lpToken);
-        (uint112 reserve0, uint112 reserve1,) = lpToken.getReserves();
-        uint256 totalSupply = lpToken.totalSupply();
-        
-        uint256 reserve0In18 = uint256(reserve0) * 10**12;
-        uint256 reserve1In18 = uint256(reserve1) * 10**12;
-        
-        uint256 token0Price = priceOracle.getPrice(pool.token0);
-        uint256 token1Price = priceOracle.getPrice(pool.token1);
-        
-        uint256 totalPoolValue = (reserve0In18 * token0Price + reserve1In18 * token1Price) / 1e18;
-        uint256 userShare = (_amount * 1e18) / totalSupply;
-        uint256 userValue = (totalPoolValue * userShare) / 1e18;
-        uint256 credits = (userValue * pool.creditRatio) / 10000;
-        
-        return credits > pool.maxCreditLimit ? pool.maxCreditLimit : credits;
-    }
 
     function registerPurse(address _purse) external {
         require(authorizedFactories[msg.sender], "Not authorized factory");
@@ -222,14 +194,6 @@ contract CreditSystem is AccessControl, ReentrancyGuard, Pausable {
         require(_factory != address(0), "Invalid factory address");
         authorizedFactories[_factory] = true;
         emit FactoryRegistered(_factory);
-    }
-
-    function pause() external onlyRole(Roles.ADMIN_ROLE) {
-        _pause();
-    }
-
-    function unpause() external onlyRole(Roles.ADMIN_ROLE) {
-        _unpause();
     }
 
     function setValidatorFactory(address _validatorFactory) external onlyRole(Roles.ADMIN_ROLE) {
@@ -271,18 +235,242 @@ contract CreditSystem is AccessControl, ReentrancyGuard, Pausable {
     }
 
     function transferCredits(address _from, address _to, uint256 _amount) external {
-        // Only validators or admin can transfer credits
-        require(
-            validatorFactory.getValidatorContract(msg.sender) != address(0) || 
-            hasRole(Roles.ADMIN_ROLE, msg.sender),
-            "Not authorized"
-        );
+        // Two authorized paths:
+        // 1. Admin role can transfer anyone's credits
+        // 2. Validator contract can transfer credits from users it has validated
+        //    OR can transfer credits FROM the validator owner themselves
+        
+        address callerAsValidator = address(0);
+        bool isValidatorContract = validatorFactory.isValidatorContract(msg.sender);
+        
+        if (isValidatorContract) {
+            // Find which validator owner controls this validator contract
+            for (uint i = 0; i < validatorFactory.getActiveValidators().length; i++) {
+                address validator = validatorFactory.getActiveValidators()[i];
+                if (validatorFactory.getValidatorContract(validator) == msg.sender) {
+                    callerAsValidator = validator;
+                    break;
+                }
+            }
+            
+            // Allow transfer if:
+            // 1. FROM is the validator owner (for initial validation)
+            // 2. OR user has been validated by this validator
+            require(
+                _from == callerAsValidator || // Validator transferring their own credits
+                userValidators[_from] == callerAsValidator, // User validated by this validator
+                "Not validated by this validator"
+            );
+        } else {
+            // Not a validator contract, must be admin
+            require(hasRole(Roles.ADMIN_ROLE, msg.sender), "Not authorized: admin role required");
+        }
         
         require(userCredits[_from] >= _amount, "Insufficient credits");
         
         userCredits[_from] -= _amount;
         userCredits[_to] += _amount;
         
+        // Log whether this was an admin transfer for transparency
+        if (!isValidatorContract) {
+            emit AdminCreditTransfer(_from, _to, _amount);
+        }
+        
         emit CreditsTransferred(_from, _to, _amount);
+    }
+
+    function setTokenRegistry(address _tokenRegistry) external onlyRole(Roles.ADMIN_ROLE) {
+        require(_tokenRegistry != address(0), "Invalid token registry");
+        address oldRegistry = address(tokenRegistry);
+        tokenRegistry = ITokenRegistry(_tokenRegistry);
+        emit TokenRegistryUpdated(oldRegistry, _tokenRegistry);
+    }
+
+    /**
+     * @notice Commit user credits to a specific purse with validator backing
+     * @param _user User address
+     * @param _purse Purse address
+     * @param _amount Credit amount
+     * @param _validator Validator address (can be zero if no validator)
+     */
+    function commitCreditsToPurse(
+        address _user, 
+        address _purse, 
+        uint256 _amount, 
+        address _validator
+    ) external {
+        require(
+            authorizedFactories[msg.sender] || 
+            authorizedPurses[msg.sender] || 
+            hasRole(Roles.ADMIN_ROLE, msg.sender),
+            "Not authorized"
+        );
+        
+        // Ensure user has enough credits
+        require(userCredits[_user] >= _amount, "Insufficient credits");
+        
+        // If validator is provided, ensure it's valid
+        if (_validator != address(0)) {
+            require(validatorFactory.getValidatorContract(_validator) != address(0), "Invalid validator");
+        }
+        
+        // Reduce user's available credits
+        userCredits[_user] -= _amount;
+        
+        // Record credit commitment to this purse
+        userPurseCredits[_user][_purse] = UserPurseCredit({
+            amount: _amount,
+            validator: _validator,
+            active: true
+        });
+        
+        emit CreditsCommitted(_user, _purse, _amount, _validator);
+    }
+
+    /**
+     * @notice Handle a user default in a purse
+     * @param _user Defaulting user address
+     * @param _purse Purse address
+     * @param _amount Default amount
+     * @param _token Token address
+     * @param _recipient Address to receive slashed tokens
+     */
+    function handleUserDefault(
+        address _user,
+        address _purse,
+        uint256 _amount,
+        address _token,
+        address _recipient
+    ) external {
+        // Check that caller is an authorized purse
+        if (!authorizedPurses[_purse]) revert NotAuthorizedPurse();
+        
+        // Get the validator owner for this user's credit
+        address validatorOwner = userPurseCredits[_user][_purse].validator;
+        if (validatorOwner == address(0)) revert NoValidatorForUser();
+        
+        // Get the actual validator contract address
+        address validatorContract = validatorFactory.getValidatorContract(validatorOwner);
+        if (validatorContract == address(0)) revert ("Validator contract not found");
+        
+        // Get available user credits for this purse
+        uint256 committedCredits = userPurseCredits[_user][_purse].amount;
+        if (committedCredits < _amount) revert InsufficientCommittedCredits();
+        
+        // Reduce user's committed credits
+        userPurseCredits[_user][_purse].amount -= _amount;
+        
+        // Update defaulter statistics
+        validatorDefaulterHistory[validatorOwner][_user] += _amount;
+        
+        // Call the validator's handleDefaulterPenalty function
+        try IValidator(validatorContract).handleDefaulterPenalty(_user, _recipient, _amount) {
+            // Default successfully handled
+            emit DefaulterPenaltyApplied(_user, validatorOwner, _amount);
+        } catch (bytes memory reason) {
+            // Log failure and continue
+            emit DefaulterPenaltyFailed(_user, validatorOwner, _amount, reason);
+            
+            // Even if penalty application fails, we still count this as processed for the purse
+            // This ensures the purse can continue operating even if a validator contract malfunctions
+        }
+    }
+
+    /**
+     * @notice Release committed credits after purse round completes
+     * @param _user User address
+     * @param _purse Purse address
+     */
+    function releasePurseCredits(address _user, address _purse) external  {
+        require(
+            authorizedPurses[msg.sender] || 
+            hasRole(Roles.ADMIN_ROLE, msg.sender),
+            "Not authorized purse"
+        );
+        
+        UserPurseCredit storage purseCredit = userPurseCredits[_user][_purse];
+        require(purseCredit.active, "No active credits for purse");
+        
+        // Return credits to appropriate party
+        if (purseCredit.validator != address(0)) {
+            // Return to validator if user had one
+            userCredits[purseCredit.validator] += purseCredit.amount;
+        } else {
+            // Return to user if they didn't have a validator
+            userCredits[_user] += purseCredit.amount;
+        }
+        
+        // Mark as inactive
+        purseCredit.active = false;
+        
+        emit CreditsReleased(_user, _purse, purseCredit.amount, purseCredit.validator);
+    }
+
+    /**
+     * @notice Get user credits committed to a purse
+     * @param _user User address
+     * @param _purse Purse address
+     * @return amount Credit amount
+     * @return validator Validator address (zero if none)
+     * @return active Whether credits are active
+     */
+    function getUserPurseCredit(
+        address _user, 
+        address _purse
+    ) external view returns (uint256 amount, address validator, bool active) {
+        UserPurseCredit storage credit = userPurseCredits[_user][_purse];
+        return (credit.amount, credit.validator, credit.active);
+    }
+
+    /**
+     * @notice Get validator's default history for a user
+     * @param _validator Validator address
+     * @param _user User address
+     * @return Total default amount
+     */
+    function getValidatorDefaulterHistory(
+        address _validator, 
+        address _user
+    ) external view returns (uint256) {
+        return validatorDefaulterHistory[_validator][_user];
+    }
+
+    function getUserStakedTokens(address _user) external view returns (address[] memory tokens, uint256[] memory amounts) {
+        // Get whitelisted tokens
+        address[] memory whitelistedTokens = tokenRegistry.getAllWhitelistedTokens();
+        
+        // Initialize arrays with the appropriate size
+        tokens = new address[](whitelistedTokens.length);
+        amounts = new uint256[](whitelistedTokens.length);
+        
+        // Populate arrays with user's staked tokens and amounts
+        for (uint256 i = 0; i < whitelistedTokens.length; i++) {
+            address token = whitelistedTokens[i];
+            uint256 stakedAmount = userTokenStakes[_user][token].amount;
+            
+            tokens[i] = token;
+            amounts[i] = stakedAmount;
+        }
+        
+        return (tokens, amounts);
+    }
+
+    /**
+     * @notice Get a user's stake for a specific token
+     * @param _user User address
+     * @param _token Token address
+     * @return amount The amount of tokens staked
+     * @return timestamp The timestamp when the tokens were staked
+     * @return creditsIssued The amount of credits issued for the stake
+     * @return token The token address
+     */
+    function getUserTokenStakeInfo(address _user, address _token) external view returns (
+        uint256 amount,
+        uint256 timestamp,
+        uint256 creditsIssued,
+        address token
+    ) {
+        UserTokenStake storage stake = userTokenStakes[_user][_token];
+        return (stake.amount, stake.timestamp, stake.creditsIssued, stake.token);
     }
 } 

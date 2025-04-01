@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
 import "./interfaces/ICreditSystem.sol";
 import "./interfaces/IValidatorFactory.sol";
 import "./interfaces/IValidator.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 
-contract PurseContract {
+contract PurseContract is AccessControl {
     using SafeERC20 for IERC20;
 
     enum PurseState {
@@ -63,6 +65,8 @@ contract PurseContract {
     event RoundResolutionStarted(uint256 round);
     event BatchProcessed(uint256 processedCount, uint256 currentIndex, uint256 totalMembers);
     event RoundResolutionCompleted(uint256 round);
+    event DefaulterProcessingFailed(address indexed member, bytes reason);
+    event DefaulterProcessed(address indexed member, uint256 amount);
 
     uint256 public constant MAX_DEFAULTERS_PER_BATCH = 5;
     uint256 public defaulterProcessingIndex;
@@ -90,6 +94,9 @@ contract PurseContract {
     error InvalidInterval();
     error InvalidContributionAmount();
 
+    // Store the admin's position
+    uint256 public adminPosition;
+
     modifier onlyMember() {
         if (!members[msg.sender].hasJoined) revert NotMember();
         _;
@@ -111,7 +118,7 @@ contract PurseContract {
         uint256 _max_members,
         uint256 _round_interval,
         address _token_address,
-        uint8 _position,
+        uint256 _position,
         address _creditSystem,
         address _validatorFactory,
         uint256 _maxDelayTime
@@ -153,6 +160,12 @@ contract PurseContract {
 
         emit PurseCreated(_admin, _contribution_amount, _max_members);
         emit MemberJoined(_admin, _position);
+
+        // Grant admin role to creator
+        _grantRole(DEFAULT_ADMIN_ROLE, _admin);
+        
+        // Store admin position
+        adminPosition = _position;
     }
 
     /**
@@ -161,26 +174,37 @@ contract PurseContract {
      * @param _validator The validator address (can be address(0) if validators aren't required)
      */
     function joinPurse(uint256 _position, address _validator) external {
-        // Check if user is already a member
-        if (members[msg.sender].hasJoined) revert AlreadyMember();
+        require(_position > 0 && _position <= purse.maxMembers, "Invalid position");
+        require(_position != adminPosition, "Admin position not available");
+        require(positionToMember[_position] == address(0), "Position already taken");
+        require(!members[msg.sender].hasJoined, "Already a member");
         
-        // Check if position is valid
-        if (_position == 0 || _position > purse.maxMembers) revert InvalidPosition();
-        
-        // Check if position is already taken
-        if (positionToMember[_position] != address(0)) revert PositionTaken();
-        
-        // Check if user has enough credits
-        if (creditSystem.userCredits(msg.sender) < purse.requiredCredits) revert InsufficientCredits();
-        
-        // If validator is provided, verify it's valid
+        // Verify user has a validator if provided
         if (_validator != address(0)) {
-            // Check if user is validated by this validator
-            if (!creditSystem.isUserValidatedBy(msg.sender, _validator)) revert UserNotValidated();
+            address validatorContract = validatorFactory.getValidatorContract(_validator);
+            require(validatorContract != address(0), "Invalid validator");
+            
+            // Check if validator has validated the user
+            bool isValidated = IValidator(validatorContract).isUserValidated(msg.sender);
+            require(isValidated, "Not validated by validator");
+            
+            // Get validator data and ensure token matches purse token
+            IValidator.ValidatorData memory validatorData = IValidator(validatorContract).getValidatorData();
+            require(validatorData.stakedToken == address(token), "Validator token mismatch with purse token");
+        }
+        else {
+            // For users without validators, check if they have staked the purse token
+            (uint256 stakedAmount, , , ) = creditSystem.getUserTokenStakeInfo(msg.sender, address(token));
+            require(stakedAmount > 0, "Must stake purse token to join without validator");
         }
         
-        // Reduce user credits
-        creditSystem.reduceCredits(msg.sender, purse.requiredCredits);
+        // Commit user credits to this purse - this will check credit balance
+        creditSystem.commitCreditsToPurse(
+            msg.sender, 
+            address(this), 
+            purse.requiredCredits,
+            _validator
+        );
         
         // Add user to purse
         members[msg.sender] = Member({
@@ -190,14 +214,14 @@ contract PurseContract {
             hasReceivedPayout: false,
             totalContributed: 0,
             lastContributionTime: 0,
-            validator: _validator // This can be address(0) if no validator was provided
+            validator: _validator
         });
-        
+
         positionToMember[_position] = msg.sender;
         memberList.push(msg.sender);
         
         emit MemberJoined(msg.sender, _position);
-        
+
         // If all positions are filled, start the purse
         if (memberList.length == purse.maxMembers) {
             purse.state = PurseState.Active;
@@ -226,42 +250,32 @@ contract PurseContract {
         }
     }
 
+    /**
+     * @notice Distribute payout to the member whose turn it is in the current round
+     */
     function _distributePayout() internal {
+        // Get recipient for this round
         address recipient = positionToMember[purse.currentRound];
-        Member storage member = members[recipient];
-        require(!member.hasReceivedPayout, "Already received payout");
-
-        // Calculate actual payout amount
-        uint256 payoutAmount;
-        if (!member.hasContributedCurrentRound) {
-            // If recipient defaulted, they only get actual contributions
-            payoutAmount = purse.totalContributions;
-        } else {
-            // If recipient contributed, they get all contributions plus penalties
-            payoutAmount = purse.totalContributions + defaulterPenalties;
-        }
-
-        // Transfer payout and update state
-        token.safeTransfer(recipient, payoutAmount);
-        member.hasReceivedPayout = true;
+        require(recipient != address(0), "No recipient for this round");
         
-        emit PayoutDistributed(recipient, payoutAmount, purse.currentRound);
-        emit RoundCompleted(purse.currentRound);
-
-        // Update round state
-        if (purse.currentRound == purse.maxMembers) {
-            purse.state = PurseState.Completed;
-            emit PurseStateChanged(PurseState.Completed);
-        } else {
-            startNewRound();
+        // Only transfer the actual contributed amounts from the purse
+        // Defaulter penalties are handled separately and sent directly to recipient
+        if (purse.totalContributions > 0) {
+            token.safeTransfer(recipient, purse.totalContributions);
         }
+        
+        // Mark recipient as having received payout
+        members[recipient].hasReceivedPayout = true;
+        
+        // Emit event with total amount distributed (contributions + default penalties)
+        emit PayoutDistributed(recipient, purse.totalContributions + defaulterPenalties, purse.currentRound);
     }
 
     function startNewRound() internal {
-        purse.currentRound++;
+            purse.currentRound++;
         purse.totalContributions = 0;
         defaulterPenalties = 0;  // Reset penalties for new round
-        purse.lastContributionTime = block.timestamp;
+            purse.lastContributionTime = block.timestamp;
 
         // Reset member states for new round
         for (uint256 i = 0; i < memberList.length; i++) {
@@ -324,6 +338,7 @@ contract PurseContract {
     function _processAllDefaulters() internal {
         address recipient = positionToMember[purse.currentRound];
         uint256 processedCount = 0;
+        uint256 totalDefaultAmount = 0;
 
         for (uint256 i = 0; i < memberList.length; i++) {
             address memberAddress = memberList[i];
@@ -332,79 +347,34 @@ contract PurseContract {
             if (!member.hasContributedCurrentRound) {
                 // Get member's validator
                 address validator = member.validator;
-                if (validator != address(0)) {
-                    // Track penalty before reducing credits
-                    defaulterPenalties += purse.contributionAmount;
-
-                    // Reduce user's credits and validator stake
-                    try creditSystem.reduceCreditsForDefault(
-                        memberAddress,
-                        recipient,
-                        purse.contributionAmount,
-                        validator
-                    ) {
-                        processedCount++;
-                    } catch {
-                        // If the call fails, continue processing other defaulters
-                        continue;
-                    }
+                
+                // Process defaulter
+                try creditSystem.handleUserDefault(
+                    memberAddress,
+                    address(this),
+                    purse.contributionAmount,
+                    address(token),
+                    recipient
+                ) {
+                    processedCount++;
+                    totalDefaultAmount += purse.contributionAmount;
+                    emit DefaulterProcessed(memberAddress, purse.contributionAmount);
+                } catch (bytes memory reason) {
+                    emit DefaulterProcessingFailed(memberAddress, reason);
+                    continue;
                 }
             }
         }
 
         emit BatchProcessed(processedCount, memberList.length, memberList.length);
         
+        // Track total penalties processed for accounting
+        defaulterPenalties = totalDefaultAmount;
+        
         // Finalize round resolution
         finalizeRoundResolution();
     }
 
-    // Keep this for backward compatibility but make it admin-only
-    function processDefaultersBatch() external onlyAdmin {
-        if (!isProcessingDefaulters) revert ResolutionNotStarted();
-        
-        uint256 batchEnd = Math.min(
-            defaulterProcessingIndex + MAX_DEFAULTERS_PER_BATCH,
-            memberList.length
-        );
-
-        address recipient = positionToMember[purse.currentRound];
-        uint256 processedCount = 0;
-
-        for (uint256 i = defaulterProcessingIndex; i < batchEnd; i++) {
-            address memberAddress = memberList[i];
-            Member storage member = members[memberAddress];
-            
-            if (!member.hasContributedCurrentRound) {
-                // Get member's validator
-                address validator = member.validator;
-                if (validator != address(0)) {
-                    // Track penalty before reducing credits
-                    defaulterPenalties += purse.contributionAmount;
-
-                    // Reduce user's credits and validator stake
-                    try creditSystem.reduceCreditsForDefault(
-                        memberAddress,
-                        recipient,
-                        purse.contributionAmount,
-                        validator
-                    ) {
-                        processedCount++;
-                    } catch {
-                        // If the call fails, continue processing other defaulters
-                        continue;
-                    }
-                }
-            }
-        }
-
-        defaulterProcessingIndex = batchEnd;
-        
-        emit BatchProcessed(processedCount, defaulterProcessingIndex, memberList.length);
-
-        if (defaulterProcessingIndex >= memberList.length) {
-            finalizeRoundResolution();
-        }
-    }
 
     function finalizeRoundResolution() internal {
         if (!isProcessingDefaulters) revert ResolutionNotStarted();
@@ -419,6 +389,9 @@ contract PurseContract {
         defaulterProcessingIndex = 0;
         
         emit RoundResolutionCompleted(purse.currentRound);
+        
+        // Start a new round after resolving the current one
+        startNewRound();
     }
 
     function getResolutionProgress() external view returns (
@@ -434,4 +407,5 @@ contract PurseContract {
             memberList.length - defaulterProcessingIndex
         );
     }
+
 }
