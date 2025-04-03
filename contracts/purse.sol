@@ -7,8 +7,9 @@ import "./interfaces/ICreditSystem.sol";
 import "./interfaces/IValidatorFactory.sol";
 import "./interfaces/IValidator.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-contract PurseContract is AccessControl {
+contract PurseContract is AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     enum PurseState {
@@ -71,6 +72,7 @@ contract PurseContract is AccessControl {
     uint256 public constant MAX_DEFAULTERS_PER_BATCH = 5;
     uint256 public defaulterProcessingIndex;
     bool public isProcessingDefaulters;
+    bool public roundResolutionProcessed;
 
     // Define custom errors at the contract level
     error AlreadyMember();
@@ -168,6 +170,7 @@ contract PurseContract is AccessControl {
         adminPosition = _position;
     }
 
+  
     /**
      * @notice Allows a user to join the purse
      * @param _position The position in the rotation the user wants to take
@@ -181,16 +184,20 @@ contract PurseContract is AccessControl {
         
         // Verify user has a validator if provided
         if (_validator != address(0)) {
-            address validatorContract = validatorFactory.getValidatorContract(_validator);
-            require(validatorContract != address(0), "Invalid validator");
+            bool isValidatorContract = validatorFactory.isValidatorContract(_validator);
+            require(isValidatorContract == true, "Invalid validator");
             
             // Check if validator has validated the user
-            bool isValidated = IValidator(validatorContract).isUserValidated(msg.sender);
+            bool isValidated = IValidator(_validator).isUserValidated(msg.sender);
             require(isValidated, "Not validated by validator");
             
             // Get validator data and ensure token matches purse token
-            IValidator.ValidatorData memory validatorData = IValidator(validatorContract).getValidatorData();
+            IValidator.ValidatorData memory validatorData = IValidator(_validator).getValidatorData();
             require(validatorData.stakedToken == address(token), "Validator token mismatch with purse token");
+
+            // Check validator has enough tokens staked by checking its balance
+            require(IERC20(validatorData.stakedToken).balanceOf(_validator) >= purse.requiredCredits,
+                "Insufficient validator stake");
         }
         else {
             // For users without validators, check if they have staked the purse token
@@ -230,7 +237,9 @@ contract PurseContract is AccessControl {
         }
     }
 
-    function contribute() external onlyMember inState(PurseState.Active) {
+    function contribute() external {
+        require(token.allowance(msg.sender, address(this)) >= purse.contributionAmount, 
+            "Insufficient token allowance");
         Member storage member = members[msg.sender];
         if (member.hasContributedCurrentRound) revert AlreadyContributed();
         if (block.timestamp < purse.lastContributionTime) revert TooEarlyForContribution();
@@ -259,7 +268,6 @@ contract PurseContract is AccessControl {
         require(recipient != address(0), "No recipient for this round");
         
         // Only transfer the actual contributed amounts from the purse
-        // Defaulter penalties are handled separately and sent directly to recipient
         if (purse.totalContributions > 0) {
             token.safeTransfer(recipient, purse.totalContributions);
         }
@@ -267,8 +275,8 @@ contract PurseContract is AccessControl {
         // Mark recipient as having received payout
         members[recipient].hasReceivedPayout = true;
         
-        // Emit event with total amount distributed (contributions + default penalties)
-        emit PayoutDistributed(recipient, purse.totalContributions + defaulterPenalties, purse.currentRound);
+        // Emit event with total amount distributed
+        emit PayoutDistributed(recipient, purse.totalContributions, purse.currentRound);
     }
 
     function startNewRound() internal {
@@ -335,7 +343,9 @@ contract PurseContract is AccessControl {
     }
 
     // New function to process all defaulters at once
-    function _processAllDefaulters() internal {
+    function _processAllDefaulters() internal nonReentrant {
+        require(!roundResolutionProcessed, "Round already resolved");
+        roundResolutionProcessed = true;
         address recipient = positionToMember[purse.currentRound];
         uint256 processedCount = 0;
         uint256 totalDefaultAmount = 0;
@@ -369,7 +379,8 @@ contract PurseContract is AccessControl {
         emit BatchProcessed(processedCount, memberList.length, memberList.length);
         
         // Track total penalties processed for accounting
-        defaulterPenalties = totalDefaultAmount;
+        defaulterPenalties = defaulterPenalties + totalDefaultAmount;
+        require(defaulterPenalties >= totalDefaultAmount, "Overflow check");
         
         // Finalize round resolution
         finalizeRoundResolution();
@@ -406,6 +417,14 @@ contract PurseContract is AccessControl {
             memberList.length,
             memberList.length - defaulterProcessingIndex
         );
+    }
+
+    function _validateStateTransition(PurseState _newState) internal view {
+        if (_newState == PurseState.Active) {
+            require(purse.state == PurseState.Open, "Invalid state transition");
+        } else if (_newState == PurseState.Completed) {
+            require(purse.state == PurseState.Active, "Invalid state transition");
+        }
     }
 
 }

@@ -68,21 +68,18 @@ describe("PurseContract", () => {
         );
         await validatorFactory.deployed();
 
-        // Update credit system with validator factory
-        await creditSystem.setValidatorFactory(validatorFactory.address);
-
         // Authorize the validator factory in the credit system
-        await creditSystem.connect(owner).authorizeFactory(validatorFactory.address);
+        await creditSystem.connect(owner).authorizeFactory(validatorFactory.address, true);
 
         // Authorize owner as a factory too (for direct purse registration)
-        await creditSystem.connect(owner).authorizeFactory(owner.address);
+        await creditSystem.connect(owner).authorizeFactory(owner.address, false);
 
         // Create validator
         await token.connect(owner).transfer(validatorOwner.address, ethers.utils.parseEther("5000"));
         await token.connect(validatorOwner).approve(validatorFactory.address, ethers.utils.parseEther("2000"));
         
         await validatorFactory.connect(validatorOwner).createValidator(
-            500, // 5% fee
+            50, // 5% fee
             token.address,
             ethers.utils.parseEther("1000") // Stake amount
         );
@@ -92,7 +89,7 @@ describe("PurseContract", () => {
         validator = await ethers.getContractAt("Validator", validatorAddress);
 
         // Authorize the validator contract in the credit system
-        await creditSystem.connect(owner).authorizeFactory(validatorAddress);
+        await creditSystem.connect(owner).authorizeFactory(validatorAddress, false);
 
         // Deploy purse contract
         const PurseContract = await ethers.getContractFactory("PurseContract");
@@ -121,23 +118,30 @@ describe("PurseContract", () => {
         // Assign credits to validator owner
         await creditSystem.connect(owner).assignCredits(validatorOwner.address, ethers.utils.parseEther("1000"));
 
-     
+        // Fund validator with enough tokens for penalties
+        await token.connect(owner).transfer(validator.address, CONTRIBUTION_AMOUNT.mul(20));
+        
+        // Ensure validator has approved credit system to handle penalties
+        await token.connect(validatorOwner).approve(purse.address, CONTRIBUTION_AMOUNT.mul(20));
+        await token.connect(validatorOwner).approve(creditSystem.address, CONTRIBUTION_AMOUNT.mul(20));
+
+        // Approve token spending for contributions
+        await token.connect(admin).approve(purse.address, CONTRIBUTION_AMOUNT.mul(10));
+        await token.connect(member1).approve(purse.address, CONTRIBUTION_AMOUNT.mul(10));
+        await token.connect(member2).approve(purse.address, CONTRIBUTION_AMOUNT.mul(10));
+
+        // Setup members with validators and link them in credit system
+        for (const member of [member1, member2]) {
+            // Validate users with validator
+            await validator.connect(validatorOwner).validateUser(member.address, ethers.utils.parseEther("100"));
+            // Make sure validator is properly linked in credit system
+            await creditSystem.setUserValidator(member.address, validator.address);
+        }
     });
 
     describe("Joining Purse", () => {
-        beforeEach(async () => {
-           
-            
-            // Validate members with validator
-            for (const member of [member1, member2]) {
-                await validator.connect(validatorOwner).validateUser(member.address, ethers.utils.parseEther("100"));
-            }
-        
-        });
-
         it("should allow members to join with valid validator", async () => {
-            await purse.connect(member1).joinPurse(2, validatorOwner.address);
-         
+            await purse.connect(member1).joinPurse(2, validator.address);
             
             const memberInfo = await purse.getMemberInfo(member1.address);
             expect(memberInfo.hasJoined).to.be.true;
@@ -149,7 +153,7 @@ describe("PurseContract", () => {
             const initialCredits = await creditSystem.userCredits(member1.address);
             
             // Join purse
-            await purse.connect(member1).joinPurse(2, validatorOwner.address);
+            await purse.connect(member1).joinPurse(2, validator.address);
             
             // Check final credits
             const finalCredits = await creditSystem.userCredits(member1.address);
@@ -162,26 +166,23 @@ describe("PurseContract", () => {
 
     describe("Default Handling", () => {
         beforeEach(async () => {
+            // Fund admin with tokens for contributions
+            await token.mint(admin.address, CONTRIBUTION_AMOUNT.mul(20));
             
-            // Setup members with validators and link them in credit system
-            for (const member of [member1, member2]) {
-                // Validate users with validator
-                await validator.connect(validatorOwner).validateUser(member.address, ethers.utils.parseEther("100"));
-            }
+            // Admin is already in position 1 from purse constructor
             // Continue with other setup that doesn't require pausing
             for (const member of [member1, member2]) {
                 // Join purse
-                await purse.connect(member).joinPurse(member === member1 ? 2 : 3, validatorOwner.address);
+                await purse.connect(member).joinPurse(member === member1 ? 2 : 3, validator.address);
             }
 
-            // Fund admin and members with tokens
-            await token.mint(admin.address, CONTRIBUTION_AMOUNT.mul(20));
-            // Members already have tokens from previous minting
+            // Fund validator with enough tokens and approve spending
+            await token.connect(owner).transfer(validator.address, CONTRIBUTION_AMOUNT.mul(20));
+            await token.mint(validator.address, CONTRIBUTION_AMOUNT.mul(3));
+            await token.connect(validatorOwner).approve(purse.address, CONTRIBUTION_AMOUNT.mul(20));
+            await token.connect(validatorOwner).approve(creditSystem.address, CONTRIBUTION_AMOUNT.mul(20));
 
-            // Fund validator contract with tokens for penalties
-            await token.mint(validator.address, CONTRIBUTION_AMOUNT.mul(20));
-
-            // Approve token spending
+            // Approve token spending for contributions
             await token.connect(admin).approve(purse.address, CONTRIBUTION_AMOUNT.mul(10));
             await token.connect(member1).approve(purse.address, CONTRIBUTION_AMOUNT.mul(10));
             await token.connect(member2).approve(purse.address, CONTRIBUTION_AMOUNT.mul(10));
@@ -198,31 +199,12 @@ describe("PurseContract", () => {
             // Make contributions except for member2
             await purse.connect(admin).contribute();
             await purse.connect(member1).contribute();
-
-
-            // Advance time past max delay
-            await ethers.provider.send("evm_increaseTime", [MAX_DELAY_TIME + 1]);
-            await ethers.provider.send("evm_mine", []);
-
-            // Non-admin member can start resolution
-            await expect(
-                purse.connect(member1).startResolveRound()
-            ).to.emit(purse, "RoundResolutionStarted")
-             .withArgs(1);
-        });
-
-        it("should process all defaulters automatically when starting resolution", async () => {
-            // Make contributions except for member2
-            await purse.connect(admin).contribute();
-            await purse.connect(member1).contribute();
+            // member2 doesn't contribute - will be processed as defaulter
 
             // Log who has contributed
             for (const m of [admin, member1, member2]) {
                 const info = await purse.getMemberInfo(m.address);
             }
-
-            // Get validator's token balance which will be reduced for defaults
-            const initialValidatorBalance = await token.balanceOf(validator.address);
            
             // Get recipient's initial balance
             const currentRoundInfo = await purse.getCurrentRound();
@@ -244,13 +226,11 @@ describe("PurseContract", () => {
 
             // Check which defaulters were processed
             const events = await purse.queryFilter(filter, startBlock);
-           
-            // Verify validator's token balance was reduced
-            const finalValidatorBalance = await token.balanceOf(validator.address);
-
-            
-            // Verify recipient received the tokens
+          
             const finalRecipientBalance = await token.balanceOf(recipientAddress);
+          
+           
+            // Verify recipient received the tokens
             expect(finalRecipientBalance.sub(initialRecipientBalance)).to.equal(CONTRIBUTION_AMOUNT.mul(3));
             
             // Verify round was completed

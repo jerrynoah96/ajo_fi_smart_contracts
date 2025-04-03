@@ -32,6 +32,13 @@ contract Validator is AccessControl, ReentrancyGuard {
     event StakeWithdrawn(uint256 amount);
     event StakeAdded(uint256 amount);
 
+     // Add custom errors
+    error UserAlreadyValidated();
+    error InsufficientValidatorCredits();
+    error UserNotValidated();
+    error InsufficientUserCredits();
+    error UserAlreadyValidatedByOther();
+
     ICreditSystem public immutable creditSystem;
 
     modifier onlyOwner() {
@@ -55,29 +62,36 @@ contract Validator is AccessControl, ReentrancyGuard {
         creditSystem = ICreditSystem(_creditSystem);
     }
 
-    function validateUser(address _user, uint256 _amount) external onlyOwner {
-        if (validatedUsers[_user].isValidated) revert UserAlreadyValidated();
+    function validateUser(address _user, uint256 _creditAmount) external onlyOwner {
+        require(!validatedUsers[_user].isValidated, "User already validated");
         
-        // Ensure the validator has enough credits for this operation
-        uint256 validatorCredits = creditSystem.userCredits(data.owner);
-        if (validatorCredits < _amount) revert InsufficientValidatorCredits();
+        // Calculate fee amount (feePercentage is in basis points)
+        uint256 feeAmount = (_creditAmount * data.feePercentage) / 10000;
+        uint256 actualCreditAmount = _creditAmount - feeAmount;
+        
+        // Ensure validator has enough credits
+        require(creditSystem.userCredits(data.owner) >= _creditAmount, "Insufficient validator credits");
         
         // Reduce validator's credits
-        creditSystem.reduceCredits(data.owner, _amount);
+        creditSystem.reduceCredits(data.owner, _creditAmount);
         
-        // Assign credits to user
-        creditSystem.assignCredits(_user, _amount);
+        // Assign credits to user (minus fee)
+        creditSystem.assignCredits(_user, actualCreditAmount);
         
-        // Record user as validated by this validator
-        creditSystem.setUserValidator(_user, address(this));
+        // Keep fee amount as credits for validator
+        creditSystem.assignCredits(data.owner, feeAmount);
         
-        // Update internal state
+        // Record validation
         validatedUsers[_user] = ValidationData({
             isValidated: true,
-            creditAmount: _amount
+            creditAmount: actualCreditAmount
         });
         
+        // Set validator relationship in credit system
+        creditSystem.setUserValidator(_user, address(this));
+        
         emit UserValidated(_user);
+        emit CreditsAssignedToUser(_user, actualCreditAmount);
     }
 
     function invalidateUser(address _user) external onlyOwner {
@@ -175,12 +189,6 @@ contract Validator is AccessControl, ReentrancyGuard {
         emit StakeAdded(_amount);
     }
 
-    // Add custom errors
-    error UserAlreadyValidated();
-    error InsufficientValidatorCredits();
-    error UserNotValidated();
-    error InsufficientUserCredits();
-    error UserAlreadyValidatedByOther();
 
     function reduceStake(uint256 _amount, address _recipient, string memory _reason) internal {
         // Check if the validator contract has enough tokens

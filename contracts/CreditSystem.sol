@@ -66,6 +66,9 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
     event CreditsReleased(address indexed user, address indexed purse, uint256 amount, address indexed validator);
     event DefaulterPenaltyApplied(address indexed user, address indexed validator, uint256 amount);
     event DefaulterPenaltyFailed(address indexed user, address indexed validator, uint256 amount, bytes reason);
+    event ValidatorFactorySet(address indexed factory);
+    event FactoryAuthorized(address indexed factory);
+    event FactoryDeauthorized(address indexed factory);
 
     // Custom errors
     error NotAuthorizedPurse();
@@ -114,7 +117,7 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
             "Minimum stake time not met"
         );
 
-        uint256 creditsToReduce = (stake.creditsIssued * _amount) / stake.amount;
+        uint256 creditsToReduce = _amount;
         
         require(userCredits[msg.sender] >= creditsToReduce, "Insufficient credits");
         
@@ -161,61 +164,55 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
         emit CreditsReduced(_user, _amount, "Manual reduction");
     }
 
-    function reduceCreditsForDefault(
-        address _user,
-        address _recipient,
-        uint256 _amount,
-        address _validator
-    ) external {
-        require(authorizedPurses[msg.sender], "Not authorized purse");
-        require(userValidators[_user] == _validator, "Invalid validator for user");
-        
-        // Reduce user credits
-        userCredits[_user] = userCredits[_user] > _amount ? 
-            userCredits[_user] - _amount : 0;
-
-        // Get validator for this user
-        address validatorAddress = validatorFactory.getValidatorContract(_validator);
-        require(validatorAddress != address(0), "No validator found");
-
-        // Reduce validator stake if user defaults
-        IValidator(validatorAddress).handleDefaulterPenalty(_user, _recipient, _amount);
-
-        emit CreditsReduced(_user, _amount, "Default penalty");
-    }
-
 
     function registerPurse(address _purse) external {
         require(authorizedFactories[msg.sender], "Not authorized factory");
         authorizedPurses[_purse] = true;
     }
 
-    function authorizeFactory(address _factory) external onlyRole(Roles.ADMIN_ROLE) {
-        require(_factory != address(0), "Invalid factory address");
+    function authorizeFactory(address _factory, bool _isValidatorFactory) external onlyRole(Roles.ADMIN_ROLE) {
         authorizedFactories[_factory] = true;
-        emit FactoryRegistered(_factory);
+        
+        if (_isValidatorFactory) {
+            require(_factory != address(0), "Invalid factory address");
+            validatorFactory = IValidatorFactory(_factory);
+            emit ValidatorFactorySet(_factory);
+        }
+        
+        emit FactoryAuthorized(_factory);
     }
 
-    function setValidatorFactory(address _validatorFactory) external onlyRole(Roles.ADMIN_ROLE) {
-        require(_validatorFactory != address(0), "Invalid validator factory");
-        require(_validatorFactory != address(validatorFactory), "Same validator factory");
+    function deauthorizeFactory(address _factory) external onlyRole(Roles.ADMIN_ROLE) {
+        authorizedFactories[_factory] = false;
         
-        address oldFactory = address(validatorFactory);
-        validatorFactory = IValidatorFactory(_validatorFactory);
+        // If this was the validator factory, clear it
+        if (address(validatorFactory) == _factory) {
+            validatorFactory = IValidatorFactory(address(0));
+            emit ValidatorFactorySet(address(0));
+        }
         
-        emit ValidatorFactoryUpdated(oldFactory, _validatorFactory);
+        emit FactoryDeauthorized(_factory);
     }
 
-    // Update the setUserValidator function to check if user is already validated
+   
     function setUserValidator(address _user, address _validator) external {
+        // Check if validator factory is authorized
+        require(authorizedFactories[address(validatorFactory)], "Validator factory not authorized");
+        
         require(
             authorizedFactories[msg.sender] || 
             hasRole(Roles.ADMIN_ROLE, msg.sender) ||
             validatorFactory.getValidatorContract(msg.sender) != address(0),
             "Not authorized"
-        );
-        
-        // If user already has a validator, ensure it's being cleared or replaced by the same validator
+        ); 
+
+        // Allow address(0) specifically for clearing validators
+        if (_validator != address(0)) {
+            bool isValidatorContract = validatorFactory.isValidatorContract(_validator);
+            require(isValidatorContract == true, "Not a validator contract");
+        }
+       
+        // If user already has a validator...
         if (userValidators[_user] != address(0) && userValidators[_user] != _validator) {
             require(
                 _validator == address(0) || // Clearing validator
@@ -235,46 +232,28 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
     }
 
     function transferCredits(address _from, address _to, uint256 _amount) external {
-        // Two authorized paths:
-        // 1. Admin role can transfer anyone's credits
-        // 2. Validator contract can transfer credits from users it has validated
-        //    OR can transfer credits FROM the validator owner themselves
+        require(validatorFactory.isValidatorContract(msg.sender), "Only validator contracts");
         
-        address callerAsValidator = address(0);
-        bool isValidatorContract = validatorFactory.isValidatorContract(msg.sender);
-        
-        if (isValidatorContract) {
-            // Find which validator owner controls this validator contract
-            for (uint i = 0; i < validatorFactory.getActiveValidators().length; i++) {
-                address validator = validatorFactory.getActiveValidators()[i];
-                if (validatorFactory.getValidatorContract(validator) == msg.sender) {
-                    callerAsValidator = validator;
-                    break;
-                }
+        // Find which validator owner controls this validator contract
+        address callerAsValidator;
+        address[] memory activeValidators = validatorFactory.getActiveValidators();
+        for (uint i = 0; i < activeValidators.length; i++) {
+            if (validatorFactory.getValidatorContract(activeValidators[i]) == msg.sender) {
+                callerAsValidator = activeValidators[i];
+                break;
             }
-            
-            // Allow transfer if:
-            // 1. FROM is the validator owner (for initial validation)
-            // 2. OR user has been validated by this validator
-            require(
-                _from == callerAsValidator || // Validator transferring their own credits
-                userValidators[_from] == callerAsValidator, // User validated by this validator
-                "Not validated by this validator"
-            );
-        } else {
-            // Not a validator contract, must be admin
-            require(hasRole(Roles.ADMIN_ROLE, msg.sender), "Not authorized: admin role required");
         }
+        
+        require(
+            _from == callerAsValidator || // Validator transferring their own credits
+            userValidators[_from] == callerAsValidator, // User validated by this validator
+            "Not validated by this validator"
+        );
         
         require(userCredits[_from] >= _amount, "Insufficient credits");
         
         userCredits[_from] -= _amount;
         userCredits[_to] += _amount;
-        
-        // Log whether this was an admin transfer for transparency
-        if (!isValidatorContract) {
-            emit AdminCreditTransfer(_from, _to, _amount);
-        }
         
         emit CreditsTransferred(_from, _to, _amount);
     }
@@ -301,19 +280,19 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
     ) external {
         require(
             authorizedFactories[msg.sender] || 
-            authorizedPurses[msg.sender] || 
-            hasRole(Roles.ADMIN_ROLE, msg.sender),
+            authorizedPurses[msg.sender],
             "Not authorized"
         );
         
         // Ensure user has enough credits
         require(userCredits[_user] >= _amount, "Insufficient credits");
         
-        // If validator is provided, ensure it's valid
+        // Validate the validator if provided
         if (_validator != address(0)) {
-            require(validatorFactory.getValidatorContract(_validator) != address(0), "Invalid validator");
+            // Check if this is a valid validator contract
+            bool isValidatorContract = validatorFactory.isValidatorContract(_validator);
+            require(isValidatorContract == true, "Invalid validator");
         }
-        
         // Reduce user's available credits
         userCredits[_user] -= _amount;
         
@@ -332,47 +311,41 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
      * @param _user Defaulting user address
      * @param _purse Purse address
      * @param _amount Default amount
-     * @param _token Token address
      * @param _recipient Address to receive slashed tokens
      */
     function handleUserDefault(
         address _user,
         address _purse,
         uint256 _amount,
-        address _token,
+        address,  // Token address (unused but kept for interface compatibility)
         address _recipient
     ) external {
         // Check that caller is an authorized purse
         if (!authorizedPurses[_purse]) revert NotAuthorizedPurse();
         
         // Get the validator owner for this user's credit
-        address validatorOwner = userPurseCredits[_user][_purse].validator;
-        if (validatorOwner == address(0)) revert NoValidatorForUser();
+        address validatorContract = userPurseCredits[_user][_purse].validator;
+        if (validatorContract == address(0)) revert NoValidatorForUser();
         
-        // Get the actual validator contract address
-        address validatorContract = validatorFactory.getValidatorContract(validatorOwner);
-        if (validatorContract == address(0)) revert ("Validator contract not found");
         
         // Get available user credits for this purse
         uint256 committedCredits = userPurseCredits[_user][_purse].amount;
         if (committedCredits < _amount) revert InsufficientCommittedCredits();
         
-        // Reduce user's committed credits
-        userPurseCredits[_user][_purse].amount -= _amount;
-        
-        // Update defaulter statistics
-        validatorDefaulterHistory[validatorOwner][_user] += _amount;
-        
         // Call the validator's handleDefaulterPenalty function
         try IValidator(validatorContract).handleDefaulterPenalty(_user, _recipient, _amount) {
-            // Default successfully handled
-            emit DefaulterPenaltyApplied(_user, validatorOwner, _amount);
-        } catch (bytes memory reason) {
-            // Log failure and continue
-            emit DefaulterPenaltyFailed(_user, validatorOwner, _amount, reason);
+            // Only reduce credits and mark as processed if penalty succeeds
+            userPurseCredits[_user][_purse].amount -= _amount;
             
-            // Even if penalty application fails, we still count this as processed for the purse
-            // This ensures the purse can continue operating even if a validator contract malfunctions
+            if (userPurseCredits[_user][_purse].amount == 0) {
+                userPurseCredits[_user][_purse].active = false;
+            }
+            
+            validatorDefaulterHistory[validatorContract][_user] += _amount;
+            emit DefaulterPenaltyApplied(_user, validatorContract, _amount);
+        } catch (bytes memory reason) {
+            emit DefaulterPenaltyFailed(_user, validatorContract, _amount, reason);
+            revert("Penalty application failed");
         }
     }
 
@@ -383,8 +356,7 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
      */
     function releasePurseCredits(address _user, address _purse) external  {
         require(
-            authorizedPurses[msg.sender] || 
-            hasRole(Roles.ADMIN_ROLE, msg.sender),
+            authorizedPurses[msg.sender],
             "Not authorized purse"
         );
         

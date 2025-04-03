@@ -52,10 +52,10 @@ describe("Validator", function() {
     await validatorFactory.deployed();
 
     // Update credit system with validator factory
-    await creditSystem.setValidatorFactory(validatorFactory.address);
+    await creditSystem.connect(owner).authorizeFactory(validatorFactory.address, true);
     
     // Authorize validator factory in credit system
-    await creditSystem.connect(owner).authorizeFactory(validatorFactory.address);
+    await creditSystem.connect(owner).authorizeFactory(validatorFactory.address, true);
     
     // Fund validator owner with tokens
     await token.connect(owner).transfer(validatorOwner.address, ethers.utils.parseEther("2000"));
@@ -63,7 +63,7 @@ describe("Validator", function() {
     // Create a validator
     await token.connect(validatorOwner).approve(validatorFactory.address, ethers.utils.parseEther("2000"));
     await validatorFactory.connect(validatorOwner).createValidator(
-      500, // fee percentage
+      50,  // fee percentage (0.5% - maximum allowed)
       token.address, // staked token
       ethers.utils.parseEther("1000") // initial stake amount
     );
@@ -74,7 +74,7 @@ describe("Validator", function() {
     validator = Validator.attach(validatorContractAddress);
     
     // Authorize the validator contract in credit system since it needs to call setUserValidator
-    await creditSystem.connect(owner).authorizeFactory(validatorContractAddress);
+    await creditSystem.connect(owner).authorizeFactory(validatorContractAddress, false);
   });
 
   it("should validate a user", async function() {
@@ -85,7 +85,9 @@ describe("Validator", function() {
     expect(await validator.isUserValidated(user.address)).to.be.true;
     
     // Check user credits
-    expect(await creditSystem.userCredits(user.address)).to.equal(ethers.utils.parseEther("100"));
+    // Fee is 0.5% (50 basis points), so user gets 99.5% of credits
+    const expectedCredits = ethers.utils.parseEther("100").mul(9950).div(10000); // 99.5%
+    expect(await creditSystem.userCredits(user.address)).to.equal(expectedCredits);
   });
 
   it("should invalidate a user", async function() {
@@ -140,10 +142,14 @@ describe("Validator", function() {
     
     // Check validator credits after validation (should be reduced by 100)
     const validatorCreditsAfterValidation = await creditSystem.userCredits(validatorOwner.address);
-    expect(validatorCreditsAfterValidation).to.equal(ethers.utils.parseEther("900")); // 1000 - 100
+    // Validator keeps 0.5% fee from the 100 validation
+    const validatorFee = ethers.utils.parseEther("100").mul(50).div(10000); // 0.5%
+    expect(validatorCreditsAfterValidation).to.equal(
+        ethers.utils.parseEther("1000").sub(ethers.utils.parseEther("100")).add(validatorFee)
+    ); // 1000 - 100 + 0.5
     
     // Setup a mock purse
-    await creditSystem.connect(owner).authorizeFactory(owner.address);
+    await creditSystem.connect(owner).authorizeFactory(owner.address, false);
     await creditSystem.connect(owner).registerPurse(owner.address);
     
     // Commit user credits to purse
@@ -151,7 +157,7 @@ describe("Validator", function() {
       user.address,
       owner.address, // purse
       ethers.utils.parseEther("50"),
-      validatorOwner.address
+      validator.address
     );
     
     // Call handleDefaulterPenalty
@@ -166,7 +172,11 @@ describe("Validator", function() {
     
     // Check validator credits were NOT reduced further by the penalty
     const finalValidatorCredits = await creditSystem.userCredits(validatorOwner.address);
-    expect(finalValidatorCredits).to.equal(ethers.utils.parseEther("900")); // Unchanged
+    expect(finalValidatorCredits).to.equal(
+        ethers.utils.parseEther("1000")
+        .sub(ethers.utils.parseEther("100"))
+        .add(validatorFee)
+    ); // 900.5
     
     // Check admin received tokens
     expect(await token.balanceOf(admin.address)).to.equal(penaltyAmount);
@@ -177,7 +187,7 @@ describe("Validator", function() {
     await validator.connect(validatorOwner).validateUser(user.address, ethers.utils.parseEther("100"));
     
     // Setup a mock purse
-    await creditSystem.connect(owner).authorizeFactory(owner.address);
+    await creditSystem.connect(owner).authorizeFactory(owner.address, false);
     await creditSystem.connect(owner).registerPurse(owner.address);
     
     // Commit user credits to purse
@@ -185,7 +195,7 @@ describe("Validator", function() {
       user.address,
       owner.address, // purse
       ethers.utils.parseEther("50"),
-      validatorOwner.address
+      validator.address
     );
     
     // Get initial balances

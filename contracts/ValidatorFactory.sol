@@ -11,13 +11,16 @@ import "./Validator.sol";
 import "./access/Roles.sol";
 
 contract ValidatorFactory is AccessControl, ReentrancyGuard {
+    // Constants
+    uint256 public constant MAX_FEE_PERCENTAGE = 50; // 0.5% in basis points (50/10000)
+    
+    ICreditSystem public creditSystem;
+    
     struct ValidatorConfig {
         uint256 minStakeAmount;      // Minimum amount validator must stake
         uint256 maxFeePercentage;    // Maximum fee validator can charge (in basis points)
     }
 
-    ICreditSystem public creditSystem;
-    
     ValidatorConfig public config;
     mapping(address => address) public validatorContracts; // validator address => validator contract
     address[] public validatorList;
@@ -36,6 +39,12 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
     event ValidatorCredited(address indexed validator, uint256 amount);
     event TokenWhitelisted(address indexed token, bool status);
     event CreditSystemUpdated(address indexed oldSystem, address indexed newSystem);
+
+
+    error AlreadyRegistered();
+    error FeeTooHigh();
+    error InsufficientStake();
+    error TokenNotWhitelisted();
 
     constructor(
         address _creditSystem,
@@ -66,7 +75,7 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
         uint256 _stakeAmount
     ) external nonReentrant {
         if (validatorContracts[msg.sender] != address(0)) revert AlreadyRegistered();
-        if (_feePercentage > config.maxFeePercentage) revert FeeTooHigh();
+        if (_feePercentage > MAX_FEE_PERCENTAGE) revert FeeTooHigh();
         if (_stakeAmount < config.minStakeAmount) revert InsufficientStake();
         if (IERC20(_tokenToStake).balanceOf(msg.sender) < _stakeAmount) revert InsufficientStake();
         if (!whitelistedTokens[_tokenToStake]) revert TokenNotWhitelisted();
@@ -157,8 +166,12 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
         emit CreditSystemUpdated(oldSystem, _creditSystem);
     }
 
-    error AlreadyRegistered();
-    error FeeTooHigh();
-    error InsufficientStake();
-    error TokenNotWhitelisted();
+    function getValidatorOwner(address _validatorContract) external view returns (address) {
+        for (uint256 i = 0; i < validatorList.length; i++) {
+            if (validatorContracts[validatorList[i]] == _validatorContract) {
+                return validatorList[i];
+            }
+        }
+        return address(0);
+    }
 }

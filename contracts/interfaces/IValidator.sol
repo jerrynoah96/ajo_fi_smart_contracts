@@ -22,6 +22,7 @@ interface IValidator {
     function getValidatorData() external view returns (ValidatorData memory);
     function withdrawStake(uint256 amount) external;
     function addStake(uint256 amount) external;
+    function validatedUsers(address _user) external view returns (ValidationData memory);
     
     // Events
     event UserValidated(address indexed user);
