@@ -363,7 +363,6 @@ contract PurseContract is AccessControl, ReentrancyGuard {
                     memberAddress,
                     address(this),
                     purse.contributionAmount,
-                    address(token),
                     recipient
                 ) {
                     processedCount++;

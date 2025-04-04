@@ -166,7 +166,6 @@ describe("Validator", function() {
       user.address, 
       owner.address, // purse
       penaltyAmount,
-      token.address, // token address
       admin.address
     );
     
@@ -207,7 +206,6 @@ describe("Validator", function() {
       user.address, // defaulter
       owner.address, // purse
       ethers.utils.parseEther("50"),
-      token.address,
       user.address // recipient is same as defaulter
     );
     

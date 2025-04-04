@@ -15,7 +15,7 @@ interface ICreditSystem {
     
     // New functions for purse credit management
     function commitCreditsToPurse(address _user, address _purse, uint256 _amount, address _validator) external;
-    function handleUserDefault(address _user, address _purse, uint256 _amount, address _token, address _recipient) external;
+    function handleUserDefault(address _user, address _purse, uint256 _amount, address _recipient) external;
     function releasePurseCredits(address _user, address _purse) external;
     function getUserPurseCredit(address _user, address _purse) external view returns (uint256 amount, address validator, bool active);
     function getValidatorDefaulterHistory(address _validator, address _user) external view returns (uint256);

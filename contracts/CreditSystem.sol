@@ -317,7 +317,6 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
         address _user,
         address _purse,
         uint256 _amount,
-        address,  // Token address (unused but kept for interface compatibility)
         address _recipient
     ) external {
         // Check that caller is an authorized purse

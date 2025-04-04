@@ -222,7 +222,6 @@ describe("CreditSystem", () => {
         user.address,
         owner.address, // Use owner address as the purse
         amountAfterFee,  // Use amount after validator fee
-        otherUser.address,
         validator.address
       );
       
@@ -264,7 +263,6 @@ describe("CreditSystem", () => {
             user.address,
             mockPurse.address,
             defaultAmount,
-            token.address,
             user.address // Same as defaulter
         );
 
@@ -311,7 +309,6 @@ describe("CreditSystem", () => {
           user.address,
           owner.address, // purse
           amountAfterFee, // Use the same amount we committed
-          token.address,
           otherUser.address // recipient
         )
       ).to.emit(creditSystem, "DefaulterPenaltyApplied")
@@ -379,7 +376,6 @@ describe("CreditSystem", () => {
         user.address,
         owner.address, // purse
         ethers.utils.parseEther("25"),
-        token.address, // token address
         otherUser.address // recipient
       );
       
