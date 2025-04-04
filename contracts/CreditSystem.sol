@@ -9,8 +9,11 @@ import "./interfaces/IValidatorFactory.sol";
 import "./interfaces/IValidator.sol";
 import "./interfaces/ITokenRegistry.sol";
 
-/// @title Credit System for Purse Protocol
-/// @notice Manages credit allocation through token staking
+/**
+ * @title Credit System
+ * @notice Core contract managing credit allocation and validator relationships
+ * @dev Handles credit assignment, reduction, and purse interactions
+ */
 contract CreditSystem is AccessControl, ReentrancyGuard {
     struct UserTokenStake {
         uint256 amount;
@@ -75,6 +78,11 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
     error NoValidatorForUser();
     error InsufficientCommittedCredits();
 
+    /**
+     * @notice Constructor initializes the credit system with validator factory and token registry
+     * @param _validatorFactory Address of the validator factory contract
+     * @param _tokenRegistry Address of the token registry contract
+     */
     constructor(
         address _validatorFactory,
         address _tokenRegistry
@@ -85,6 +93,11 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
         tokenRegistry = ITokenRegistry(_tokenRegistry);
     }
 
+    /**
+     * @notice Allows users to stake tokens to receive credits
+     * @param _token Address of the token to stake
+     * @param _amount Amount of tokens to stake
+     */
     function stakeToken(address _token, uint256 _amount) external nonReentrant {
         require(tokenRegistry.isTokenWhitelisted(_token), "Token not whitelisted");
         
@@ -102,6 +115,11 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
         emit TokenStaked(msg.sender, _token, _amount, creditAmount);
     }
 
+    /**
+     * @notice Allows users to unstake their tokens and burn credits
+     * @param _token Address of the token to unstake
+     * @param _amount Amount of tokens to unstake (0 for all)
+     */
     function unstakeToken(address _token, uint256 _amount) external nonReentrant {
         UserTokenStake storage stake = userTokenStakes[msg.sender][_token];
         require(stake.amount > 0, "No stake found");
@@ -135,6 +153,11 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
         emit TokenUnstaked(msg.sender, _token, _amount);
     }
 
+    /**
+     * @notice Assigns credits to a user
+     * @param _user Address of the user to receive credits
+     * @param _amount Amount of credits to assign
+     */
     function assignCredits(address _user, uint256 _amount) external {
         // Check if caller is authorized
         bool isAuthorized = 
@@ -149,6 +172,11 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
         emit CreditsAssigned(msg.sender, _user, _amount);
     }
 
+    /**
+     * @notice Reduces credits from a user's balance
+     * @param _user Address of the user
+     * @param _amount Amount of credits to reduce
+     */
     function reduceCredits(address _user, uint256 _amount) external {
         // Check if caller is authorized
         bool isAuthorized = 

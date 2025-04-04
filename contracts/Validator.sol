@@ -8,6 +8,11 @@ import "./access/Roles.sol";
 import "./interfaces/ICreditSystem.sol";
 import "./interfaces/IValidator.sol";
 
+/**
+ * @title Validator Contract
+ * @notice Manages user validation and stake handling for the credit system
+ * @dev Validators stake tokens to validate users and handle defaulter penalties
+ */
 contract Validator is AccessControl, ReentrancyGuard {
     struct ValidatorData {
         address owner;

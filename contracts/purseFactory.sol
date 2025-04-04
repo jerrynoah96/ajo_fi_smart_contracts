@@ -6,6 +6,11 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 import "./access/Roles.sol";
 import "./interfaces/IValidatorFactory.sol";
 
+/**
+ * @title Purse Factory
+ * @notice Factory contract for creating and tracking purse contracts
+ * @dev Manages purse deployment and registration with credit system
+ */
 contract PurseFactory is AccessControl {
     event PurseCreated(address indexed purse, address indexed creator);
 

@@ -9,9 +9,15 @@ import "./interfaces/IValidator.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
+/**
+ * @title Purse Contract
+ * @notice Manages rotating savings groups with validator-backed credit system
+ * @dev Handles member contributions, payouts, and defaulter processing
+ */
 contract PurseContract is AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
+    /// @notice Represents the current state of the purse
     enum PurseState {
         Open,      // Initial state, accepting members
         Active,    // All members joined, contributions started
@@ -19,6 +25,7 @@ contract PurseContract is AccessControl, ReentrancyGuard {
         Terminated // Emergency stop
     }
 
+    /// @notice Core purse configuration and state
     struct Purse {
         PurseState state;
         uint256 contributionAmount;    // Amount each member contributes per round
@@ -33,7 +40,7 @@ contract PurseContract is AccessControl, ReentrancyGuard {
         address admin;                // Admin address (usually the creator)
     }
 
-    // Member struct to track individual member details
+    /// @notice Information about each member in the purse
     struct Member {
         bool hasJoined;
         uint256 position;              // Position in rotation (1-based)
@@ -114,6 +121,18 @@ contract PurseContract is AccessControl, ReentrancyGuard {
         _;
     }
 
+    /**
+     * @notice Initialize a new purse contract
+     * @param _admin Admin address who will manage the purse
+     * @param _contribution_amount Amount each member must contribute per round
+     * @param _max_members Maximum number of members allowed
+     * @param _round_interval Time between rounds
+     * @param _token_address Address of the ERC20 token used for contributions
+     * @param _position Admin's position in the rotation
+     * @param _creditSystem Address of the credit system contract
+     * @param _validatorFactory Address of the validator factory contract
+     * @param _maxDelayTime Maximum time allowed before defaulter processing
+     */
     constructor(
         address _admin,
         uint256 _contribution_amount,
@@ -237,6 +256,10 @@ contract PurseContract is AccessControl, ReentrancyGuard {
         }
     }
 
+    /**
+     * @notice Make a contribution for the current round
+     * @dev Transfers tokens from sender to purse contract
+     */
     function contribute() external {
         require(token.allowance(msg.sender, address(this)) >= purse.contributionAmount, 
             "Insufficient token allowance");
@@ -293,6 +316,13 @@ contract PurseContract is AccessControl, ReentrancyGuard {
         }
     }
 
+    /**
+     * @notice Get information about the current round
+     * @return round Current round number
+     * @return currentRecipient Address of current round's recipient
+     * @return totalContributions Total contributions in current round
+     * @return nextContributionTime Timestamp when next contribution is due
+     */
     function getCurrentRound() external view returns (
         uint256 round,
         address currentRecipient,
@@ -328,7 +358,10 @@ contract PurseContract is AccessControl, ReentrancyGuard {
         return memberList;
     }
 
-    // Modified to allow anyone to call and process defaulters automatically
+    /**
+     * @notice Start processing defaulters for the current round
+     * @dev Can be called by anyone after maxDelayTime has passed
+     */
     function startResolveRound() external inState(PurseState.Active) {
         if (block.timestamp < purse.lastContributionTime + purse.maxDelayTime) 
             revert DelayTimeNotExceeded();

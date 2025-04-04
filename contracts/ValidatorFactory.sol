@@ -10,6 +10,11 @@ import "./interfaces/IValidator.sol";
 import "./Validator.sol";
 import "./access/Roles.sol";
 
+/**
+ * @title Validator Factory
+ * @notice Factory contract for deploying and managing validators
+ * @dev Handles validator creation, configuration, and tracking
+ */
 contract ValidatorFactory is AccessControl, ReentrancyGuard {
     // Constants
     uint256 public constant MAX_FEE_PERCENTAGE = 50; // 0.5% in basis points (50/10000)
