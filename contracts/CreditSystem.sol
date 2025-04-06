@@ -100,17 +100,30 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
      */
     function stakeToken(address _token, uint256 _amount) external nonReentrant {
         require(tokenRegistry.isTokenWhitelisted(_token), "Token not whitelisted");
+        require(_amount > 0, "Amount must be greater than 0");
         
         IERC20(_token).transferFrom(msg.sender, address(this), _amount);
         
         uint256 creditAmount = _amount;
         userCredits[msg.sender] += creditAmount;
-        userTokenStakes[msg.sender][_token] = UserTokenStake({
-            amount: _amount,
-            timestamp: block.timestamp,
-            creditsIssued: creditAmount,
-            token: _token
-        });
+        
+        // Get existing stake if any
+        UserTokenStake storage existingStake = userTokenStakes[msg.sender][_token];
+        
+        if (existingStake.amount > 0) {
+            // Update existing stake
+            existingStake.amount += _amount;
+            existingStake.creditsIssued += creditAmount;
+            existingStake.timestamp = block.timestamp;  
+        } else {
+            // Create new stake
+            userTokenStakes[msg.sender][_token] = UserTokenStake({
+                amount: _amount,
+                timestamp: block.timestamp,
+                creditsIssued: creditAmount,
+                token: _token
+            });
+        }
         
         emit TokenStaked(msg.sender, _token, _amount, creditAmount);
     }
@@ -121,7 +134,7 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
      * @param _amount Amount of tokens to unstake (0 for all)
      */
     function unstakeToken(address _token, uint256 _amount) external nonReentrant {
-        UserTokenStake storage stake = userTokenStakes[msg.sender][_token];
+    UserTokenStake storage stake = userTokenStakes[msg.sender][_token];
         require(stake.amount > 0, "No stake found");
         
         if (_amount == 0) {
@@ -162,9 +175,7 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
         // Check if caller is authorized
         bool isAuthorized = 
             authorizedFactories[msg.sender] || 
-            hasRole(Roles.ADMIN_ROLE, msg.sender) ||
-            validatorFactory.isValidatorContract(msg.sender) || 
-            authorizedPurses[msg.sender]; // Purse contract
+            authorizedPurses[msg.sender]; 
         
         require(isAuthorized, "Not authorized");
         
@@ -181,8 +192,6 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
         // Check if caller is authorized
         bool isAuthorized = 
             authorizedFactories[msg.sender] || 
-            hasRole(Roles.ADMIN_ROLE, msg.sender) ||
-            validatorFactory.isValidatorContract(msg.sender) || // Validator contract
             authorizedPurses[msg.sender]; // Purse contract
         
         require(isAuthorized, "Not authorized");
@@ -201,7 +210,7 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
     function authorizeFactory(address _factory, bool _isValidatorFactory) external onlyRole(Roles.ADMIN_ROLE) {
         authorizedFactories[_factory] = true;
         
-        if (_isValidatorFactory) {
+         if (_isValidatorFactory) {
             require(_factory != address(0), "Invalid factory address");
             validatorFactory = IValidatorFactory(_factory);
             emit ValidatorFactorySet(_factory);
