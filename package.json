@@ -40,6 +40,19 @@
     "solidity-docgen": "^0.6.0-beta.35"
   },
   "scripts": {
-    "prettier-format": "prettier --config .prettierrc 'test/**/*.ts' --write"
+    "prettier": "prettier --config .prettierrc --write 'test/**/*.ts' 'scripts/**/*.ts'",
+    "lint": "solhint 'contracts/**/*.sol' && eslint . --ext .ts",
+    "lint:fix": "solhint 'contracts/**/*.sol' --fix && eslint . --ext .ts --fix",
+    "test": "hardhat test",
+    "test:gas": "REPORT_GAS=true hardhat test",
+    "coverage": "hardhat coverage",
+    "compile": "hardhat compile",
+    "clean": "hardhat clean",
+    "node": "hardhat node",
+    "deploy:local": "hardhat run scripts/deploy.ts --network localhost",
+    "deploy:sepolia": "hardhat run scripts/deploy.ts --network sepolia",
+    "deploy:mainnet": "hardhat run scripts/deploy.ts --network mainnet",
+    "verify": "hardhat verify",
+    "docs": "solidity-docgen"
   }
 }

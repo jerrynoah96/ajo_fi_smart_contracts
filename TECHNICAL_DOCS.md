@@ -2,220 +2,174 @@
 
 ## System Architecture
 
-```mermaid
-graph TD
-    A[User] -->|Stakes LP| B[Credit System]
-    A -->|Requests Validation| C[Validator]
-    C -->|Assigns Credits| B
-    B -->|Credit Check| D[Purse Factory]
-    D -->|Creates| E[Purse Contract]
-    A -->|Joins| E
-    E -->|Updates| B
+This document provides technical details about the Ajo Finance system, a credit-based thrift (rotating savings) platform built on Ethereum.
+
+The system consists of the following core components:
+
+1. **Credit System**: Manages user credits from token staking and validator endorsements
+2. **Validator System**: Handles user validation and stake management
+3. **Purse System**: Implements the rotating savings groups
+
+```
+┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
+│                 │      │                 │      │                 │
+│  Token Registry ◄──────┤  Credit System  ├──────►  PurseFactory   │
+│                 │      │                 │      │                 │
+└────────┬────────┘      └────────┬────────┘      └────────┬────────┘
+         │                        │                        │
+         │                        │                        │
+         │                        ▼                        ▼
+┌────────▼────────┐      ┌─────────────────┐      ┌─────────────────┐
+│                 │      │                 │      │                 │
+│  ERC20 Tokens   │      │ValidatorFactory │      │  Purse Contract │
+│                 │      │                 │      │                 │
+└─────────────────┘      └────────┬────────┘      └─────────────────┘
+                                  │
+                                  ▼
+                         ┌─────────────────┐
+                         │                 │
+                         │    Validator    │
+                         │                 │
+                         └─────────────────┘
 ```
 
-## Contract Specifications
+## Core Contracts
 
 ### 1. CreditSystem.sol
-The central contract managing credit scores and validator governance.
 
-#### Key Components:
-- Credit Tracking
-- Validator Management
-- LP Staking
-- Price Oracle Integration
+The central contract managing credit allocation and validator relationships.
 
-```mermaid
-classDiagram
-    class CreditSystem {
-        +userCredits: mapping
-        +validators: mapping
-        +whitelistedPools: mapping
-        +stakeLPToken()
-        +registerValidator()
-        +assignCredits()
-        +calculateLPCredits()
-    }
-```
+**Key Features:**
+- Token staking mechanism to earn credits
+- Credit assignment and validation
+- Purse registration and credit management
+- User-validator relationship tracking
+- Default handling
 
-#### Credit Mechanisms:
-1. **LP Staking**
-   - Users stake LP tokens from whitelisted pools
-   - Credits = LP Value × Credit Ratio
-   - Time-locked positions
-   
-2. **Validator Endorsement**
-   - Validators stake USDC/USDT
-   - Can assign credits up to validation power
-   - Reputation affects credit assignment power
+**Key State Variables:**
+- `userCredits`: Tracks credit balances for each user
+- `userTokenStakes`: Records token staking details
+- `authorizedPurses`: List of authorized purse contracts
+- `authorizedFactories`: Factory contracts with special permissions
 
-3. **Administrative Assignment**
-   - Owner can assign credits to validators
-   - Used for institutional integrations
+**Key Functions:**
+- `stakeToken()`: Allows users to stake tokens for credits
+- `unstakeToken()`: Withdraws staked tokens after time lock
+- `assignCredits()`: Assigns credits to a user
+- `reduceCredits()`: Removes credits from a user
+- `commitCreditsToPurse()`: Commits user credits to a purse
+- `handleUserDefault()`: Processes user defaults in purses
 
-### 2. PurseFactory.sol
-Factory contract for creating new thrift groups.
+### 2. TokenRegistry.sol
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant PurseFactory
-    participant CreditSystem
-    participant Purse
+Tracks whitelisted tokens that can be used in the system.
 
-    User->>CreditSystem: Get Credits
-    User->>PurseFactory: Create Purse
-    PurseFactory->>CreditSystem: Check Credits
-    PurseFactory->>Purse: Deploy New Purse
-    Purse->>CreditSystem: Register with Credit System
-```
+**Key Features:**
+- Token whitelisting management
+- Simple admin interface
 
-#### Features:
-- Purse creation with credit requirements
-- Member tracking
-- Chat ID integration
-- Factory pattern implementation
+**Key Functions:**
+- `setTokenWhitelist()`: Sets a token's whitelist status
+- `isTokenWhitelisted()`: Checks if a token is whitelisted
 
-### 3. Purse.sol
-Individual thrift group contract.
+### 3. ValidatorFactory.sol
 
-#### States:
-```mermaid
-stateDiagram-v2
-    [*] --> Open
-    Open --> Closed: Max Members Joined
-    Closed --> Terminated: All Rounds Complete
-    Open --> Terminated: Emergency Stop
-```
+Factory contract for creating and managing validator instances.
 
-#### Key Features:
-- Position-based membership
-- Automated round progression
+**Key Features:**
+- Validator creation with configurable parameters
+- Token whitelisting for staking
+- Minimum stake requirements
+
+**Key Functions:**
+- `createValidator()`: Creates a new validator contract
+- `getValidatorContract()`: Retrieves a validator's contract address
+- `setTokenWhitelist()`: Manages supported tokens for validator staking
+
+### 4. Validator.sol
+
+Individual validator contracts that stake tokens and validate users.
+
+**Key Features:**
+- User validation with customizable fees
+- Stake management
+- Default handling and penalties
+
+**Key Functions:**
+- `validateUser()`: Validates a user and assigns credits
+- `invalidateUser()`: Removes validation from a user
+- `handleDefaulterPenalty()`: Processes penalties when validated users default
+- `addStake()`: Adds more stake to the validator
+
+### 5. PurseFactory.sol
+
+Factory contract for creating new thrift groups (purses).
+
+**Key Features:**
+- Purse creation with configurable parameters
 - Credit requirement enforcement
-- Donation tracking
+- Integration with credit system
 
-## Validator System
+**Key Functions:**
+- `createPurse()`: Creates a new purse contract
+- `getPurseCount()`: Gets the total number of purses created
 
-### Reputation Mechanism
-```mermaid
-graph LR
-    A[Successful Endorsement] -->|+1 Point| B[Reputation Score]
-    C[Failed Endorsement] -->|-1 Point| B
-    B -->|>80% Success| D[Increased Power]
-    B -->|<50% Success| E[Decreased Power]
-    B -->|<30 Points| F[Deactivation]
-```
+### 6. Purse.sol
 
-### Validator Economics
-- Initial Stake: 10,000 USDC/USDT
-- Fee Range: 0-10%
-- Bonus Multiplier: 1x-2x
-- Slashing Conditions:
-  1. User defaults
-  2. Low reputation
-  3. Inactivity
+Individual thrift group contract managing contributions and payouts.
 
-## LP Staking Mechanism
+**Key Features:**
+- Position-based membership
+- Scheduled contributions
+- Rotational payouts
+- Default handling
 
-### Credit Calculation
-```mermaid
-graph TD
-    A[LP Token Amount] -->|Get Reserves| B[Pool Value]
-    B -->|Calculate Share| C[User's Value]
-    C -->|Apply Ratio| D[Base Credits]
-    D -->|Apply Limits| E[Final Credits]
-```
+**Key Functions:**
+- `joinPurse()`: Allows users to join a purse
+- `contribute()`: Makes a contribution for the current round
+- `resolveRound()`: Processes the end of a round
+- `processBatchDefaulters()`: Handles defaulters in batches
 
-### Pool Parameters
-- Credit Ratio: Pool-specific
-- Minimum Stake Time
-- Maximum Credit Limit
-- Price Feed Requirements
+## Credit Mechanisms
 
-## Security Features
+1. **Token Staking**
+   - Users stake ERC20 tokens to receive credits
+   - Credits are locked for a minimum period
+   - Credits can be released by unstaking
 
-### Credit System
+2. **Validator Endorsement**
+   - Validators stake tokens as collateral
+   - Validators can assign credits to users they trust
+   - Validators face penalties if validated users default
+
+3. **Purse Participation**
+   - Credits are committed when joining a purse
+   - Credits are returned/redistributed when purse completes
+   - Validators may receive credits from defaulters
+
+## Purse Lifecycle
+
+1. **Creation**: Admin creates purse with parameters
+2. **Joining**: Users join by selecting positions and committing credits
+3. **Active**: Purse moves to active state when full
+4. **Contributions**: Members make regular contributions
+5. **Payouts**: Members receive payouts according to position
+6. **Completion**: Purse completes when all rounds finish
+
+## Security Considerations
+
 1. **Access Control**
-   - Ownable for admin functions
-   - Validator requirements
-   - Credit assignment limits
+   - Role-based access control using OpenZeppelin's patterns
+   - Factory authorization for critical functions
+   - Admin permissions for token whitelisting
 
 2. **Economic Security**
-   - Validator stakes
-   - Time locks
-   - Reputation system
+   - Validator staking requirements
+   - Time-locked token positions
+   - Defaulter penalties
 
-3. **Emergency Controls**
-   - System pause
-   - Credit freezing
-   - Validator deactivation
-
-### Purse Security
-1. **Member Protection**
-   - Position verification
-   - Donation tracking
-   - Credit requirements
-
-2. **Fund Safety**
-   - Direct transfers
-   - Balance tracking
-   - Emergency exits
-
-## Integration Points
-
-### External Systems
-1. **Price Oracles**
-   - Token price feeds
-   - LP value calculation
-   - Update frequency checks
-
-2. **Token Standards**
-   - ERC20 for tokens
-   - LP token interfaces
-   - Stable coin integration
-
-### User Integration
-```mermaid
-sequenceDiagram
-    participant User
-    participant DApp
-    participant Contracts
-    participant Oracle
-
-    User->>DApp: Connect Wallet
-    DApp->>Contracts: Get Credit Status
-    DApp->>Oracle: Get LP Values
-    User->>DApp: Stake LP/Join Purse
-    DApp->>Contracts: Execute Transaction
-    Contracts->>DApp: Update Status
-```
-
-## Error Handling
-
-### Credit System Errors
-- Insufficient credits
-- Invalid validator status
-- Price feed staleness
-- LP token restrictions
-
-### Purse Errors
-- Position conflicts
-- Membership limits
-- Timing restrictions
-- Donation requirements
-
-## Upgrade Considerations
-
-1. **Proxy Pattern**
-   - Future upgrades
-   - State preservation
-   - Version control
-
-2. **Data Migration**
-   - Credit history
-   - Validator status
-   - LP positions
-
-3. **Backward Compatibility**
-   - Interface stability
-   - Event compatibility
-   - Function signatures 
+3. **Implementation Security**
+   - Nonreentrant modifiers for external calls
+   - Input validation
+   - Custom error types
+   - Batch processing for gas optimization 
