@@ -27,25 +27,25 @@ describe("Validator", function() {
   }
 
   beforeEach(async function() {
-    [owner, validatorOwner, user, admin] = await ethers.getSigners();
-
-    // Deploy a mock token
+    [owner, user, admin, validatorOwner] = await ethers.getSigners();
+    
+    // Deploy token
     const Token = await ethers.getContractFactory("MockERC20");
-    token = await Token.deploy("Test Token", "TEST", 18);
+    token = await Token.deploy("Test Token", "TST", 18);
     await token.deployed();
     
     // Mint tokens to owner
-    await token.mint(owner.address, ethers.utils.parseEther("5000"));
-
-    // Deploy TokenRegistry
+    await token.mint(owner.address, ethers.utils.parseEther("10000"));
+    
+    // Deploy token registry
     const TokenRegistryFactory = await ethers.getContractFactory("TokenRegistry");
     tokenRegistry = await TokenRegistryFactory.deploy();
     await tokenRegistry.deployed();
-
+    
     // Whitelist token in registry
     await tokenRegistry.connect(owner).setTokenWhitelist(token.address, true);
-
-    // Deploy credit system with temporary zero address for validator factory
+    
+    // Deploy credit system
     const CreditSystem = await ethers.getContractFactory("CreditSystem");
     creditSystem = await CreditSystem.deploy(
       ethers.constants.AddressZero, // Temporary zero address
@@ -59,7 +59,7 @@ describe("Validator", function() {
       creditSystem.address,
       ethers.utils.parseEther("1000"), // Min stake
       1000, // Max fee percentage (10%)
-      token.address // Default whitelisted token
+      tokenRegistry.address // Token registry
     );
     await validatorFactory.deployed();
 

@@ -7,6 +7,7 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "./interfaces/ICreditSystem.sol";
 import "./interfaces/IValidator.sol";
+import "./interfaces/ITokenRegistry.sol";
 import "./Validator.sol";
 import "./access/Roles.sol";
 
@@ -16,10 +17,8 @@ import "./access/Roles.sol";
  * @dev Handles validator creation, configuration, and tracking
  */
 contract ValidatorFactory is AccessControl, ReentrancyGuard {
-    // Constants
-    uint256 public constant MAX_FEE_PERCENTAGE = 50; // 0.5% in basis points (50/10000)
-    
     ICreditSystem public creditSystem;
+    ITokenRegistry public tokenRegistry;
     
     struct ValidatorConfig {
         uint256 minStakeAmount;      // Minimum amount validator must stake
@@ -29,7 +28,6 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
     ValidatorConfig public config;
     mapping(address => address) public validatorContracts; // validator address => validator contract
     address[] public validatorList;
-    mapping(address => bool) public whitelistedTokens;
 
     event ValidatorCreated(
         address indexed validator,
@@ -41,9 +39,10 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
         uint256 minStakeAmount,
         uint256 maxFeePercentage
     );
+    event ValidatorParameterUpdated(string parameter, uint256 oldValue, uint256 newValue);
     event ValidatorCredited(address indexed validator, uint256 amount);
-    event TokenWhitelisted(address indexed token, bool status);
     event CreditSystemUpdated(address indexed oldSystem, address indexed newSystem);
+    event TokenRegistryUpdated(address indexed oldRegistry, address indexed newRegistry);
 
 
     error AlreadyRegistered();
@@ -51,35 +50,31 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
     error InsufficientStake();
     error TokenNotWhitelisted();
     error InvalidCreditSystem();
+    error InvalidParameter();
 
     /**
      * @notice Contract constructor
      * @param _creditSystem Address of the credit system contract
      * @param _minStakeAmount Minimum stake amount required for validators
      * @param _maxFeePercentage Maximum fee percentage validators can charge
-     * @param _defaultToken Address of the default token to whitelist
+     * @param _tokenRegistry Address of the token registry contract
      */
     constructor(
         address _creditSystem,
         uint256 _minStakeAmount,
         uint256 _maxFeePercentage,
-        address _defaultToken
+        address _tokenRegistry
     ) {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(Roles.ADMIN_ROLE, msg.sender);
         
         creditSystem = ICreditSystem(_creditSystem);
+        tokenRegistry = ITokenRegistry(_tokenRegistry);
         
         config = ValidatorConfig({
             minStakeAmount: _minStakeAmount,
             maxFeePercentage: _maxFeePercentage
         });
-        
-        // Whitelist default token
-        if (_defaultToken != address(0)) {
-            whitelistedTokens[_defaultToken] = true;
-            emit TokenWhitelisted(_defaultToken, true);
-        }
     }
 
     /**
@@ -94,10 +89,10 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
         uint256 _stakeAmount
     ) external nonReentrant {
         if (validatorContracts[msg.sender] != address(0)) revert AlreadyRegistered();
-        if (_feePercentage > MAX_FEE_PERCENTAGE) revert FeeTooHigh();
+        if (_feePercentage > config.maxFeePercentage) revert FeeTooHigh();
         if (_stakeAmount < config.minStakeAmount) revert InsufficientStake();
         if (IERC20(_tokenToStake).balanceOf(msg.sender) < _stakeAmount) revert InsufficientStake();
-        if (!whitelistedTokens[_tokenToStake]) revert TokenNotWhitelisted();
+        if (!tokenRegistry.isTokenWhitelisted(_tokenToStake)) revert TokenNotWhitelisted();
 
         // Deploy new validator contract with updated constructor parameters
         Validator validator = new Validator(
@@ -154,33 +149,79 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
     }
 
     /**
-     * @notice Update configuration parameters
+     * @notice Update a specific validator configuration parameter (numeric values)
+     * @param _parameter Name of the parameter to update ("minStakeAmount" or "maxFeePercentage")
+     * @param _value New value for the parameter
+     */
+    function updateValidatorParameter(string memory _parameter, uint256 _value) external onlyRole(Roles.ADMIN_ROLE) {
+        bytes32 paramHash = keccak256(abi.encodePacked(_parameter));
+        
+        if (paramHash == keccak256(abi.encodePacked("minStakeAmount"))) {
+            uint256 oldValue = config.minStakeAmount;
+            config.minStakeAmount = _value;
+            emit ValidatorParameterUpdated("minStakeAmount", oldValue, _value);
+        } else if (paramHash == keccak256(abi.encodePacked("maxFeePercentage"))) {
+            uint256 oldValue = config.maxFeePercentage;
+            config.maxFeePercentage = _value;
+            emit ValidatorParameterUpdated("maxFeePercentage", oldValue, _value);
+        } else {
+            revert InvalidParameter();
+        }
+        
+        // Also emit the general config update event for backward compatibility
+        emit ValidatorConfigUpdated(
+            config.minStakeAmount,
+            config.maxFeePercentage
+        );
+    }
+
+    /**
+     * @notice Update a specific validator address parameter
+     * @param _parameter Name of the parameter to update ("creditSystem" or "tokenRegistry")
+     * @param _value New address value for the parameter
+     */
+    function updateAddressParameter(string memory _parameter, address _value) external onlyRole(Roles.ADMIN_ROLE) {
+        bytes32 paramHash = keccak256(abi.encodePacked(_parameter));
+        
+        if (paramHash == keccak256(abi.encodePacked("creditSystem"))) {
+            if (_value == address(0)) revert InvalidCreditSystem();
+            address oldSystem = address(creditSystem);
+            creditSystem = ICreditSystem(_value);
+            emit CreditSystemUpdated(oldSystem, _value);
+        } else if (paramHash == keccak256(abi.encodePacked("tokenRegistry"))) {
+            if (_value == address(0)) revert InvalidParameter();
+            address oldRegistry = address(tokenRegistry);
+            tokenRegistry = ITokenRegistry(_value);
+            emit TokenRegistryUpdated(oldRegistry, _value);
+        } else {
+            revert InvalidParameter();
+        }
+    }
+
+    /**
+     * @notice Update all configuration parameters at once
      * @param _minStakeAmount New minimum stake amount
      * @param _maxFeePercentage New maximum fee percentage
      */
-    function updateConfig(
+    function updateAllConfig(
         uint256 _minStakeAmount,
         uint256 _maxFeePercentage
     ) external onlyRole(Roles.ADMIN_ROLE) {
+        uint256 oldMinStake = config.minStakeAmount;
+        uint256 oldMaxFee = config.maxFeePercentage;
+        
         config = ValidatorConfig({
             minStakeAmount: _minStakeAmount,
             maxFeePercentage: _maxFeePercentage
         });
 
+        emit ValidatorParameterUpdated("minStakeAmount", oldMinStake, _minStakeAmount);
+        emit ValidatorParameterUpdated("maxFeePercentage", oldMaxFee, _maxFeePercentage);
+        
         emit ValidatorConfigUpdated(
             _minStakeAmount,
             _maxFeePercentage
         );
-    }
-
-    /**
-     * @notice Set the whitelist status of a token
-     * @param _token The token address
-     * @param _status Whether the token should be whitelisted
-     */
-    function setTokenWhitelist(address _token, bool _status) external onlyRole(Roles.ADMIN_ROLE) {
-        whitelistedTokens[_token] = _status;
-        emit TokenWhitelisted(_token, _status);
     }
 
     /**
@@ -196,17 +237,6 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
             }
         }
         return false;
-    }
-
-    /**
-     * @notice Update the credit system address
-     * @param _creditSystem The new credit system address
-     */
-    function updateCreditSystem(address _creditSystem) external onlyRole(Roles.ADMIN_ROLE) {
-        if (_creditSystem == address(0)) revert InvalidCreditSystem();
-        address oldSystem = address(creditSystem);
-        creditSystem = ICreditSystem(_creditSystem);
-        emit CreditSystemUpdated(oldSystem, _creditSystem);
     }
 
     /**

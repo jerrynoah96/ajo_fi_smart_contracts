@@ -68,9 +68,6 @@ describe("CreditSystem", () => {
     );
     await validatorFactory.deployed();
     
-    // Whitelist token in validator factory
-    await validatorFactory.connect(owner).setTokenWhitelist(token.address, true);
-
     // Deploy credit system with validator factory
     const CreditSystemFactory = await ethers.getContractFactory("CreditSystem");
     creditSystem = await CreditSystemFactory.deploy(
@@ -80,7 +77,7 @@ describe("CreditSystem", () => {
     await creditSystem.deployed();
 
     // Update validator factory with credit system
-    await validatorFactory.connect(owner).updateCreditSystem(creditSystem.address);
+    await validatorFactory.connect(owner).updateAddressParameter("creditSystem", creditSystem.address);
 
     // Setup credit system roles
     await creditSystem.grantRole(ethers.constants.HashZero, owner.address);

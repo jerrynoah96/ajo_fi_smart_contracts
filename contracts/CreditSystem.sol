@@ -31,12 +31,10 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
     // State variables
     mapping(address => uint256) public userCredits;
     mapping(address => mapping(address => UserTokenStake)) public userTokenStakes;
-    mapping(address => uint256) public userPurseCount;
     mapping(address => bool) public authorizedPurses;
     mapping(address => bool) public authorizedFactories;
     
     // Constants
-    uint256 public constant MAX_PURSES_PER_USER = 5;
     uint256 public constant MIN_STAKE_TIME = 1 days;
 
     IValidatorFactory public validatorFactory;
@@ -60,7 +58,6 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
     event FactoryRegistered(address indexed factory);
     event CreditsAssigned(address indexed from, address indexed to, uint256 amount);
     event ValidatorFactoryUpdated(address indexed oldFactory, address indexed newFactory);
-    event CreditsTransferred(address indexed from, address indexed to, uint256 amount);
     event UserValidatorSet(address indexed user, address indexed validator);
     event AdminCreditTransfer(address indexed from, address indexed to, uint256 amount);
     event TokenRegistryUpdated(address indexed oldRegistry, address indexed newRegistry);
@@ -253,7 +250,8 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
         if (userValidators[_user] != address(0) && userValidators[_user] != _validator) {
             require(
                 _validator == address(0) || // Clearing validator
-                msg.sender == userValidators[_user] || // Current validator updating
+                msg.sender == userValidators[_user] || // Current validator updating (validator contract)
+                validatorFactory.getValidatorContract(msg.sender) == userValidators[_user] || // Current validator owner updating
                 hasRole(Roles.ADMIN_ROLE, msg.sender), // Admin can override
                 "User already validated by another validator" 
             );
@@ -266,33 +264,6 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
     // Add a function to check if user is validated by a specific validator
     function isUserValidatedBy(address _user, address _validator) external view returns (bool) {
         return userValidators[_user] == _validator;
-    }
-
-    function transferCredits(address _from, address _to, uint256 _amount) external {
-        require(validatorFactory.isValidatorContract(msg.sender), "Only validator contracts");
-        
-        // Find which validator owner controls this validator contract
-        address callerAsValidator;
-        address[] memory activeValidators = validatorFactory.getActiveValidators();
-        for (uint i = 0; i < activeValidators.length; i++) {
-            if (validatorFactory.getValidatorContract(activeValidators[i]) == msg.sender) {
-                callerAsValidator = activeValidators[i];
-                break;
-            }
-        }
-        
-        require(
-            _from == callerAsValidator || // Validator transferring their own credits
-            userValidators[_from] == callerAsValidator, // User validated by this validator
-            "Not validated by this validator"
-        );
-        
-        require(userCredits[_from] >= _amount, "Insufficient credits");
-        
-        userCredits[_from] -= _amount;
-        userCredits[_to] += _amount;
-        
-        emit CreditsTransferred(_from, _to, _amount);
     }
 
     function setTokenRegistry(address _tokenRegistry) external onlyRole(Roles.ADMIN_ROLE) {
@@ -480,5 +451,26 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
     ) {
         UserTokenStake storage stake = userTokenStakes[_user][_token];
         return (stake.amount, stake.timestamp, stake.creditsIssued, stake.token);
+    }
+    
+    /**
+     * @notice Update validator defaulter history when a user has defaulted
+     * @param _validator Validator address
+     * @param _user User address
+     * @param _amount Amount of the default
+     */
+    function updateValidatorDefaulterHistory(
+        address _validator,
+        address _user,
+        uint256 _amount
+    ) external {
+        // Only allow authorized factories (validators) to call this function
+        require(authorizedFactories[msg.sender], "Not authorized");
+        
+        // Update the defaulter history
+        validatorDefaulterHistory[_validator][_user] += _amount;
+        
+        // Emit event for tracking
+        emit DefaulterPenaltyApplied(_user, _validator, _amount);
     }
 } 

@@ -77,7 +77,7 @@ describe("PurseContract", () => {
             creditSystem.address,
             ethers.utils.parseEther("1000"), // Min stake
             1000, // Max fee percentage (10%)
-            token.address // Default whitelisted token
+            tokenRegistry.address // Token registry address
         );
         await validatorFactory.deployed();
 

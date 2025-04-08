@@ -36,6 +36,7 @@ contract Validator is AccessControl, ReentrancyGuard {
     event CreditsWithdrawnFromUser(address indexed user, uint256 amount);
     event StakeWithdrawn(uint256 amount);
     event StakeAdded(uint256 amount);
+    event UserDefaulted(address indexed user, uint256 amount);
 
      // Add custom errors
     error UserAlreadyValidated();
@@ -118,6 +119,18 @@ contract Validator is AccessControl, ReentrancyGuard {
             creditSystem.assignCredits(data.owner, amountToReduce);
         }
         
+        // Check for default situation (user has less credits than originally assigned)
+        if (currentCredits < originalCreditAmount) {
+            // Calculate the default amount (what we couldn't recover)
+            uint256 defaultAmount = originalCreditAmount - (currentCredits > 0 ? currentCredits : 0);
+            
+            // Update defaulter history via credit system
+            creditSystem.updateValidatorDefaulterHistory(address(this), _user, defaultAmount);
+            
+            // Emit an event for the default
+            emit UserDefaulted(_user, defaultAmount);
+        }
+        
         // Clear validator relationship
         creditSystem.setUserValidator(_user, address(0));
         
@@ -193,7 +206,6 @@ contract Validator is AccessControl, ReentrancyGuard {
         
         emit StakeAdded(_amount);
     }
-
 
     function reduceStake(uint256 _amount, address _recipient, string memory _reason) internal {
         // Check if the validator contract has enough tokens
