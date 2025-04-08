@@ -44,7 +44,7 @@ const config: HardhatUserConfig = {
   networks: {
     // Local development networks
     hardhat: {
-      forking: process.env.FORK_MAINNET === "true" ? {
+      forking: process.env.FORK_MAINNET === "true" && ALCHEMY_API_KEY ? {
         url: `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}`,
         blockNumber: 19000000,
       } : undefined,
@@ -61,22 +61,13 @@ const config: HardhatUserConfig = {
     
     // Test networks
     sepolia: {
-      url: process.env.SEPOLIA_URL || `https://eth-sepolia.g.alchemy.com/v2/${ALCHEMY_API_KEY}`,
+      url: process.env.SEPOLIA_URL || (ALCHEMY_API_KEY ? `https://eth-sepolia.g.alchemy.com/v2/${ALCHEMY_API_KEY}` : "https://rpc.sepolia.org"),
       accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
       chainId: 11155111,
       gas: 2100000,
       gasPrice: 8000000000,
       timeout: 60000
-    },
-    
-    // Main networks - only defined when needed to avoid accidental deployments
-    mainnet: process.env.ENABLE_MAINNET === "true" ? {
-      url: process.env.MAINNET_URL || `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}`,
-      accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
-      chainId: 1,
-      gasPrice: "auto",
-      timeout: 120000
-    } : undefined
+    }
   },
   gasReporter: {
     enabled: process.env.REPORT_GAS === "true",
@@ -103,5 +94,16 @@ const config: HardhatUserConfig = {
     artifacts: "./artifacts"
   }
 };
+
+// Only add mainnet if explicitly enabled
+if (process.env.ENABLE_MAINNET === "true") {
+  config.networks!.mainnet = {
+    url: process.env.MAINNET_URL || (ALCHEMY_API_KEY ? `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}` : "https://ethereum.publicnode.com"),
+    accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
+    chainId: 1,
+    gasPrice: "auto",
+    timeout: 120000
+  };
+}
 
 export default config;
