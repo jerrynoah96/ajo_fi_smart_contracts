@@ -5,11 +5,18 @@ import "@nomiclabs/hardhat-ethers";
 import "@typechain/hardhat";
 import "hardhat-gas-reporter";
 import "solidity-coverage";
+import { task } from "hardhat/config";
 
+// Load environment variables
 dotenv.config();
 
-// This is a sample Hardhat task. To learn how to create your own go to
-// https://hardhat.org/guides/create-task.html
+// Define private key from env or use a default array for localhost testing
+const PRIVATE_KEY = process.env.PRIVATE_KEY || "0x0000000000000000000000000000000000000000000000000000000000000000";
+// Use demo API keys if not provided (only for development)
+const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY || "";
+const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY || "";
+
+// This is a sample Hardhat task
 task("accounts", "Prints the list of accounts", async (taskArgs, hre) => {
   const accounts = await hre.ethers.getSigners();
 
@@ -18,41 +25,83 @@ task("accounts", "Prints the list of accounts", async (taskArgs, hre) => {
   }
 });
 
-// You need to export an object to set up your config
-// Go to https://hardhat.org/config/ to learn more
-
+// Configuration
 const config: HardhatUserConfig = {
   solidity: {
-    version: "0.8.20",
-    settings: {
-      optimizer: {
-        enabled: true,
-        runs: 200
+    compilers: [
+      {
+        version: "0.8.29",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 200
+          },
+          evmVersion: "paris"
+        }
       }
-    }
+    ]
   },
   networks: {
+    // Local development networks
     hardhat: {
-      forking: {
-        url: "https://eth-mainnet.g.alchemy.com/v2/yvtWF3Uv-oE_1m6Vm_Ib0AJZopQSbpRc",
+      forking: process.env.FORK_MAINNET === "true" ? {
+        url: `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}`,
         blockNumber: 19000000,
-      },
+      } : undefined,
+      chainId: 31337,
+      mining: {
+        auto: true,
+        interval: 0
+      }
     },
+    localhost: {
+      url: "http://127.0.0.1:8545",
+      chainId: 31337,
+    },
+    
+    // Test networks
     sepolia: {
-      url: process.env.SEPOLIA_URL || "",
-      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
-    }
+      url: process.env.SEPOLIA_URL || `https://eth-sepolia.g.alchemy.com/v2/${ALCHEMY_API_KEY}`,
+      accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
+      chainId: 11155111,
+      gas: 2100000,
+      gasPrice: 8000000000,
+      timeout: 60000
+    },
+    
+    // Main networks - only defined when needed to avoid accidental deployments
+    mainnet: process.env.ENABLE_MAINNET === "true" ? {
+      url: process.env.MAINNET_URL || `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}`,
+      accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
+      chainId: 1,
+      gasPrice: "auto",
+      timeout: 120000
+    } : undefined
   },
   gasReporter: {
-    enabled: process.env.REPORT_GAS !== undefined,
+    enabled: process.env.REPORT_GAS === "true",
     currency: "USD",
+    outputFile: process.env.GAS_REPORT_OUTPUT_FILE || "",
+    noColors: process.env.GAS_REPORT_NO_COLORS === "true",
+    token: "ETH",
+    gasPriceApi: process.env.GAS_PRICE_API
   },
   etherscan: {
-    apiKey: process.env.ETHERSCAN_API_KEY,
+    apiKey: ETHERSCAN_API_KEY,
+  },
+  typechain: {
+    outDir: "typechain",
+    target: "ethers-v5"
   },
   mocha: {
     timeout: 100000
   },
+  paths: {
+    sources: "./contracts",
+    tests: "./test",
+    cache: "./cache",
+    artifacts: "./artifacts"
+  }
 };
 
 export default config;

@@ -3,7 +3,9 @@ import { SignerWithAddress } from "@nomiclabs/hardhat-ethers/signers";
 import { expect } from "chai";
 import { Contract } from "ethers";
 import { ethers } from "hardhat";
-import { Roles } from "../contracts/access/Roles";
+
+// Define the roles directly to avoid import issues
+const ADMIN_ROLE = ethers.utils.keccak256(ethers.utils.toUtf8Bytes("ADMIN_ROLE"));
 
 describe("PurseContract", () => {
     let purse: Contract;
@@ -11,7 +13,6 @@ describe("PurseContract", () => {
     let creditSystem: Contract;
     let validatorFactory: Contract;
     let validator: Contract;
-    let priceOracle: Contract;
     let owner: SignerWithAddress;
     let admin: SignerWithAddress;
     let member1: SignerWithAddress;
@@ -23,6 +24,23 @@ describe("PurseContract", () => {
     const CONTRIBUTION_AMOUNT = ethers.utils.parseEther("100");
     const MAX_DELAY_TIME = 86400; // 1 day in seconds
 
+    // Helper function to fund members with tokens and approve spending
+    async function fundMembersAndApprove(members: SignerWithAddress[], amount: any) {
+        for (const member of members) {
+            await token.mint(member.address, amount.mul(20));
+            await creditSystem.connect(owner).assignCredits(member.address, amount.mul(10));
+            await token.connect(member).approve(purse.address, amount.mul(10));
+        }
+    }
+
+    // Helper function to validate members with the validator
+    async function validateMembers(members: SignerWithAddress[], amount: any) {
+        for (const member of members) {
+            await validator.connect(validatorOwner).validateUser(member.address, amount);
+            await creditSystem.setUserValidator(member.address, validator.address);
+        }
+    }
+
     beforeEach(async () => {
         [owner, admin, member1, member2, member3, validatorOwner] = await ethers.getSigners();
 
@@ -33,11 +51,6 @@ describe("PurseContract", () => {
 
         // Mint more tokens to owner to distribute
         await token.mint(owner.address, ethers.utils.parseEther("50000"));
-
-        // Deploy mock price oracle
-        const MockPriceOracle = await ethers.getContractFactory("MockPriceOracle");
-        priceOracle = await MockPriceOracle.deploy();
-        await priceOracle.deployed();
 
         // Deploy token registry
         const TokenRegistryFactory = await ethers.getContractFactory("TokenRegistry");
@@ -56,7 +69,7 @@ describe("PurseContract", () => {
         await creditSystem.deployed();
 
         // Ensure owner has admin role
-        await creditSystem.grantRole(Roles.ADMIN_ROLE, owner.address);
+        await creditSystem.grantRole(ADMIN_ROLE, owner.address);
 
         // Deploy validator factory with token whitelisted
         const ValidatorFactory = await ethers.getContractFactory("ValidatorFactory");
@@ -68,10 +81,8 @@ describe("PurseContract", () => {
         );
         await validatorFactory.deployed();
 
-        // Authorize the validator factory in the credit system
+        // Setup authorizations
         await creditSystem.connect(owner).authorizeFactory(validatorFactory.address, true);
-
-        // Authorize owner as a factory too (for direct purse registration)
         await creditSystem.connect(owner).authorizeFactory(owner.address, false);
 
         // Create validator
@@ -79,7 +90,7 @@ describe("PurseContract", () => {
         await token.connect(validatorOwner).approve(validatorFactory.address, ethers.utils.parseEther("2000"));
         
         await validatorFactory.connect(validatorOwner).createValidator(
-            50, // 5% fee
+            50, // 0.5% fee
             token.address,
             ethers.utils.parseEther("1000") // Stake amount
         );
@@ -110,10 +121,7 @@ describe("PurseContract", () => {
         await creditSystem.connect(owner).registerPurse(purse.address);
 
         // Fund members with tokens and credits
-        for (const member of [member1, member2, member3]) {
-            await token.mint(member.address, CONTRIBUTION_AMOUNT.mul(20));
-            await creditSystem.connect(owner).assignCredits(member.address, CONTRIBUTION_AMOUNT.mul(10));
-        }
+        await fundMembersAndApprove([admin, member1, member2, member3], CONTRIBUTION_AMOUNT);
 
         // Assign credits to validator owner
         await creditSystem.connect(owner).assignCredits(validatorOwner.address, ethers.utils.parseEther("1000"));
@@ -121,22 +129,12 @@ describe("PurseContract", () => {
         // Fund validator with enough tokens for penalties
         await token.connect(owner).transfer(validator.address, CONTRIBUTION_AMOUNT.mul(20));
         
-        // Ensure validator has approved credit system to handle penalties
+        // Setup approvals
         await token.connect(validatorOwner).approve(purse.address, CONTRIBUTION_AMOUNT.mul(20));
         await token.connect(validatorOwner).approve(creditSystem.address, CONTRIBUTION_AMOUNT.mul(20));
 
-        // Approve token spending for contributions
-        await token.connect(admin).approve(purse.address, CONTRIBUTION_AMOUNT.mul(10));
-        await token.connect(member1).approve(purse.address, CONTRIBUTION_AMOUNT.mul(10));
-        await token.connect(member2).approve(purse.address, CONTRIBUTION_AMOUNT.mul(10));
-
-        // Setup members with validators and link them in credit system
-        for (const member of [member1, member2]) {
-            // Validate users with validator
-            await validator.connect(validatorOwner).validateUser(member.address, ethers.utils.parseEther("100"));
-            // Make sure validator is properly linked in credit system
-            await creditSystem.setUserValidator(member.address, validator.address);
-        }
+        // Setup members with validators
+        await validateMembers([member1, member2], ethers.utils.parseEther("100"));
     });
 
     describe("Joining Purse", () => {

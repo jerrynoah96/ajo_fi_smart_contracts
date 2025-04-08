@@ -1,6 +1,6 @@
 // contracts/ValidatorFactory.sol
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.20;
+pragma solidity 0.8.29;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -50,7 +50,15 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
     error FeeTooHigh();
     error InsufficientStake();
     error TokenNotWhitelisted();
+    error InvalidCreditSystem();
 
+    /**
+     * @notice Contract constructor
+     * @param _creditSystem Address of the credit system contract
+     * @param _minStakeAmount Minimum stake amount required for validators
+     * @param _maxFeePercentage Maximum fee percentage validators can charge
+     * @param _defaultToken Address of the default token to whitelist
+     */
     constructor(
         address _creditSystem,
         uint256 _minStakeAmount,
@@ -74,6 +82,12 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
         }
     }
 
+    /**
+     * @notice Create a new validator
+     * @param _feePercentage The fee percentage charged by the validator
+     * @param _tokenToStake The token address to stake
+     * @param _stakeAmount The amount to stake
+     */
     function createValidator(
         uint256 _feePercentage, 
         address _tokenToStake, 
@@ -112,10 +126,19 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
         emit ValidatorCredited(msg.sender, creditAmount);
     }
 
+    /**
+     * @notice Get the validator contract address for a validator owner
+     * @param _validator The validator owner address
+     * @return The validator contract address
+     */
     function getValidatorContract(address _validator) external view returns (address) {
         return validatorContracts[_validator];
     }
 
+    /**
+     * @notice Get all active validators
+     * @return Array of active validator owner addresses
+     */
     function getActiveValidators() external view returns (address[] memory) {
         // Since we removed the isActive flag, all validators in the list are considered active
         address[] memory activeValidators = new address[](validatorList.length);
@@ -130,6 +153,11 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
         return activeValidators;
     }
 
+    /**
+     * @notice Update configuration parameters
+     * @param _minStakeAmount New minimum stake amount
+     * @param _maxFeePercentage New maximum fee percentage
+     */
     function updateConfig(
         uint256 _minStakeAmount,
         uint256 _maxFeePercentage
@@ -145,11 +173,21 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
         );
     }
 
+    /**
+     * @notice Set the whitelist status of a token
+     * @param _token The token address
+     * @param _status Whether the token should be whitelisted
+     */
     function setTokenWhitelist(address _token, bool _status) external onlyRole(Roles.ADMIN_ROLE) {
         whitelistedTokens[_token] = _status;
         emit TokenWhitelisted(_token, _status);
     }
 
+    /**
+     * @notice Check if an address is a validator contract deployed by this factory
+     * @param _contract The address to check
+     * @return Whether the address is a validator contract
+     */
     function isValidatorContract(address _contract) external view returns (bool) {
         // Check if this contract is in our list of deployed validators
         for (uint256 i = 0; i < validatorList.length; i++) {
@@ -165,12 +203,17 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
      * @param _creditSystem The new credit system address
      */
     function updateCreditSystem(address _creditSystem) external onlyRole(Roles.ADMIN_ROLE) {
-        require(_creditSystem != address(0), "Invalid credit system");
+        if (_creditSystem == address(0)) revert InvalidCreditSystem();
         address oldSystem = address(creditSystem);
         creditSystem = ICreditSystem(_creditSystem);
         emit CreditSystemUpdated(oldSystem, _creditSystem);
     }
 
+    /**
+     * @notice Get the owner of a validator contract
+     * @param _validatorContract The validator contract address
+     * @return The validator owner address
+     */
     function getValidatorOwner(address _validatorContract) external view returns (address) {
         for (uint256 i = 0; i < validatorList.length; i++) {
             if (validatorContracts[validatorList[i]] == _validatorContract) {

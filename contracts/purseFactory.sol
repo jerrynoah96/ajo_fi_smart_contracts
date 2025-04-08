@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.20;
+pragma solidity 0.8.29;
 import "./purse.sol";
 import "./interfaces/ICreditSystem.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
@@ -32,49 +32,43 @@ contract PurseFactory is AccessControl {
         // This should be done by the admin after deployment
     }
 
-    // TODO : creator should have the needed checks for validator and should to join purse without validtor 
-
     function createPurse(
-        uint256 contribution_amount,
-        uint256 _max_member,
-        uint256 time_interval,
-        uint256 chatId,
-        address _tokenAddress,
-        uint8 _position,
-        uint256 _maxDelayTime
-    ) public {
-        // Calculate required credits (same as collateral)
-        uint256 _required_credits = contribution_amount * (_max_member - 1);
-        
-        // Check if user has enough credits
+        uint256 _contribution_amount,
+        uint256 _max_members,
+        uint256 _round_interval,
+        address _token_address,
+        uint256 _position,
+        uint256 _maxDelayTime,
+        address _validator  // Optional: address(0) if no validator
+    ) external returns (address purseAddress) {
+        // Ensure that the creator has enough credits
+        uint256 _required_credits = _contribution_amount * (_max_members - 1);
         require(creditSystem.userCredits(msg.sender) >= _required_credits, "Insufficient credits");
 
-        // Reduce user's credits (this acts as collateral)
-        creditSystem.reduceCredits(msg.sender, _required_credits);
-        
-        // Create new purse with maxDelayTime parameter
-        PurseContract purse = new PurseContract(
+        // Deploy a new PurseContract
+        PurseContract newPurse = new PurseContract(
             msg.sender,
-            contribution_amount,
-            _max_member,
-            time_interval,
-            _tokenAddress,
+            _contribution_amount,
+            _max_members,
+            _round_interval,
+            _token_address,
             _position,
             address(creditSystem),
             address(validatorFactory),
             _maxDelayTime
         );
 
-        // Register the purse with credit system
-        creditSystem.registerPurse(address(purse));
+        // Register the purse with the credit system
+        creditSystem.registerPurse(address(newPurse));
 
-        // Add purse to tracking
-        _list_of_purses.push(address(purse));
+        // Add the purse to the list
+        _list_of_purses.push(address(newPurse));
         purse_count++;
-        id_to_purse[address(purse)] = purse_count;
-        purseToChatId[address(purse)] = chatId;
+        id_to_purse[address(newPurse)] = purse_count;
+        purseToChatId[address(newPurse)] = 0; // Assuming chatId is set to 0 for this function
 
-        emit PurseCreated(address(purse), msg.sender);
+        emit PurseCreated(address(newPurse), msg.sender);
+        return address(newPurse);
     }
 
     function allPurse() public view returns (address[] memory) {

@@ -1,8 +1,10 @@
 import { expect } from "chai";
 import { ethers } from "hardhat";
-import { Contract, BigNumber } from "ethers";
+import { Contract } from "ethers";
 import { SignerWithAddress } from "@nomiclabs/hardhat-ethers/signers";
-import { Roles } from "../contracts/access/Roles";
+
+// Define roles directly
+const ADMIN_ROLE = ethers.utils.keccak256(ethers.utils.toUtf8Bytes("ADMIN_ROLE"));
 
 describe("CreditSystem", () => {
   let creditSystem: Contract;
@@ -15,6 +17,30 @@ describe("CreditSystem", () => {
   let validator: Contract;
   let validatorOwner: SignerWithAddress;
   let otherUser: SignerWithAddress;
+
+  // Helper function for setting up mock purse and validator
+  async function setupMockPurseAndValidator() {
+    await creditSystem.connect(owner).authorizeFactory(owner.address, false);
+    await creditSystem.connect(owner).registerPurse(owner.address);
+  }
+
+  // Helper function for creating a validator if needed
+  async function ensureValidatorCreated() {
+    let validatorContractAddress = await validatorFactory.getValidatorContract(validatorOwner.address);
+    
+    // Only create a new validator if one doesn't exist
+    if (validatorContractAddress === ethers.constants.AddressZero) {
+      await token.connect(validatorOwner).approve(validatorFactory.address, ethers.utils.parseEther("2000"));
+      await validatorFactory.connect(validatorOwner).createValidator(
+        50, // fee percentage (0.5%) - maximum allowed
+        token.address, // staked token
+        ethers.utils.parseEther("1000") // initial stake
+      );
+      validatorContractAddress = await validatorFactory.getValidatorContract(validatorOwner.address);
+    }
+    
+    return await ethers.getContractAt("Validator", validatorContractAddress);
+  }
 
   beforeEach(async () => {
     [owner, user, factory, otherUser, validatorOwner] = await ethers.getSigners();
@@ -44,7 +70,6 @@ describe("CreditSystem", () => {
     
     // Whitelist token in validator factory
     await validatorFactory.connect(owner).setTokenWhitelist(token.address, true);
-    
 
     // Deploy credit system with validator factory
     const CreditSystemFactory = await ethers.getContractFactory("CreditSystem");
@@ -56,39 +81,27 @@ describe("CreditSystem", () => {
 
     // Update validator factory with credit system
     await validatorFactory.connect(owner).updateCreditSystem(creditSystem.address);
-   
-
-    // Make sure validator factory is authorized in credit system
-    await creditSystem.connect(owner).authorizeFactory(validatorFactory.address, true);
- 
 
     // Setup credit system roles
     await creditSystem.grantRole(ethers.constants.HashZero, owner.address);
-    await creditSystem.grantRole(Roles.ADMIN_ROLE, owner.address);
+    await creditSystem.grantRole(ADMIN_ROLE, owner.address);
 
     // Authorize the validator factory in the credit system
     await creditSystem.connect(owner).authorizeFactory(validatorFactory.address, true);
-   
 
     // Setup initial token balances
     await token.mint(user.address, ethers.utils.parseEther("1000"));
     await token.connect(user).approve(creditSystem.address, ethers.utils.parseEther("1000"));
 
-    // Setup validator
+    // Setup validator owner with tokens
     await token.mint(validatorOwner.address, ethers.utils.parseUnits("5000", "ether"));
     await token.connect(validatorOwner).approve(validatorFactory.address, ethers.utils.parseUnits("1000", "ether"));
-    await validatorFactory.connect(validatorOwner).createValidator(
-      50, // fee percentage (0.5%) - maximum allowed
-      token.address,
-      ethers.utils.parseUnits("1000", "ether") // Stake amount
-    );
-
-    const validatorAddress = await validatorFactory.getValidatorContract(validatorOwner.address);
-    validator = await ethers.getContractAt("Validator", validatorAddress);
+    
+    // Create validator instance
+    validator = await ensureValidatorCreated();
 
     // Authorize the validator contract in the credit system
-    await creditSystem.connect(owner).authorizeFactory(validatorAddress, false);
-   
+    await creditSystem.connect(owner).authorizeFactory(validator.address, false);
   });
 
   describe("Token Staking and Credits", () => {
@@ -329,14 +342,11 @@ describe("CreditSystem", () => {
     it("should allow committing credits to a purse", async () => {
       // Give user some credits
       const creditAmount = ethers.utils.parseEther("100");
+      // Authorize owner as a factory before assigning credits
       await creditSystem.connect(owner).authorizeFactory(owner.address, false);
       await creditSystem.connect(owner).assignCredits(user.address, creditAmount);
       
-      // Authorize owner as a factory before registering the purse
-      await creditSystem.connect(owner).authorizeFactory(owner.address, false);
-      // Authorize validator in credit system
-      await creditSystem.connect(owner).authorizeFactory(validatorFactory.address, true);
-      // Authorize owner as purse
+      // Register the purse
       await creditSystem.connect(owner).registerPurse(owner.address);
       
       // Commit credits
@@ -360,6 +370,7 @@ describe("CreditSystem", () => {
     it("should handle defaults correctly with validator", async () => {
       // Setup
       const creditAmount = ethers.utils.parseEther("100");
+      // Authorize owner as a factory before assigning credits
       await creditSystem.connect(owner).authorizeFactory(owner.address, false);
       await creditSystem.connect(owner).assignCredits(user.address, creditAmount);
       await creditSystem.connect(owner).registerPurse(owner.address);
@@ -367,8 +378,6 @@ describe("CreditSystem", () => {
       // Stake tokens for validator if needed
       await token.connect(validatorOwner).approve(validator.address, ethers.utils.parseEther("50"));
       await validator.connect(validatorOwner).addStake(ethers.utils.parseEther("50"));
-      // Authorize validator in credit system
-      await creditSystem.connect(owner).authorizeFactory(validatorFactory.address, true);
       
       // Commit credits with validator
       await creditSystem.connect(owner).commitCreditsToPurse(
@@ -404,12 +413,10 @@ describe("CreditSystem", () => {
     it("should handle defaults correctly without validator", async () => {
       // Setup
       const creditAmount = ethers.utils.parseEther("100");
+      // Authorize owner as a factory before assigning credits
       await creditSystem.connect(owner).authorizeFactory(owner.address, false);
       await creditSystem.connect(owner).assignCredits(user.address, creditAmount);
-      await creditSystem.connect(owner).authorizeFactory(owner.address, false);
       await creditSystem.connect(owner).registerPurse(owner.address);
-      // Authorize validator in credit system
-      await creditSystem.connect(owner).authorizeFactory(validatorFactory.address, true);
       
       // Get initial user credits
       const initialUserCredits = await creditSystem.userCredits(user.address);
@@ -436,12 +443,11 @@ describe("CreditSystem", () => {
     it("should release credits properly with validator", async () => {
       // Setup
       const creditAmount = ethers.utils.parseEther("100");
+      // Authorize owner as a factory before assigning credits
       await creditSystem.connect(owner).authorizeFactory(owner.address, false);
       await creditSystem.connect(owner).assignCredits(user.address, creditAmount);
-      await creditSystem.connect(owner).authorizeFactory(owner.address, false);
       await creditSystem.connect(owner).registerPurse(owner.address);
-      // Authorize validator in credit system
-      await creditSystem.connect(owner).authorizeFactory(validatorFactory.address, true);
+      
       // Add credits to validator owner and validate user first
       await validator.connect(validatorOwner).validateUser(user.address, creditAmount);
       
@@ -474,11 +480,10 @@ describe("CreditSystem", () => {
     it("should release credits properly without validator", async () => {
       // Setup
       const creditAmount = ethers.utils.parseEther("100");
+      // Authorize owner as a factory before assigning credits
       await creditSystem.connect(owner).authorizeFactory(owner.address, false);
       await creditSystem.connect(owner).assignCredits(user.address, creditAmount);
       await creditSystem.connect(owner).registerPurse(owner.address);
-      // Authorize validator in credit system
-      await creditSystem.connect(owner).authorizeFactory(validatorFactory.address, true);
       
       // Get initial user credits
       const initialUserCredits = await creditSystem.userCredits(user.address);

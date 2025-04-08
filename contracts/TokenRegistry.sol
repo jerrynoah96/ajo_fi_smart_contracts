@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.20;
+pragma solidity 0.8.29;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "./access/Roles.sol";
@@ -10,6 +10,10 @@ import "./access/Roles.sol";
  * @dev This contract maintains a list of approved tokens that can be used across the protocol
  */
 contract TokenRegistry is AccessControl {
+    // Custom errors
+    error ZeroAddress();
+    error ArrayLengthMismatch();
+    
     // Mapping from token address to whether it is whitelisted
     mapping(address => bool) public whitelistedTokens;
     
@@ -30,7 +34,7 @@ contract TokenRegistry is AccessControl {
      * @param _status Whether the token should be whitelisted
      */
     function setTokenWhitelist(address _token, bool _status) external onlyRole(Roles.ADMIN_ROLE) {
-        require(_token != address(0), "Cannot whitelist zero address");
+        if (_token == address(0)) revert ZeroAddress();
         
         // Update only if status is changing
         if (whitelistedTokens[_token] != _status) {
@@ -54,13 +58,13 @@ contract TokenRegistry is AccessControl {
         address[] calldata _tokens, 
         bool[] calldata _statuses
     ) external onlyRole(Roles.ADMIN_ROLE) {
-        require(_tokens.length == _statuses.length, "Array lengths must match");
+        if (_tokens.length != _statuses.length) revert ArrayLengthMismatch();
         
         for (uint i = 0; i < _tokens.length; i++) {
             address token = _tokens[i];
             bool status = _statuses[i];
             
-            require(token != address(0), "Cannot whitelist zero address");
+            if (token == address(0)) revert ZeroAddress();
             
             // Update only if status is changing
             if (whitelistedTokens[token] != status) {

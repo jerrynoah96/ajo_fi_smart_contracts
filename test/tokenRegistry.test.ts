@@ -2,7 +2,6 @@ import { expect } from "chai";
 import { ethers } from "hardhat";
 import { Contract } from "ethers";
 import { SignerWithAddress } from "@nomiclabs/hardhat-ethers/signers";
-import { Roles } from "../contracts/access/Roles";
 
 describe("TokenRegistry", () => {
   let tokenRegistry: Contract;
@@ -71,7 +70,7 @@ describe("TokenRegistry", () => {
     it("should not allow zero address to be whitelisted", async () => {
       await expect(
         tokenRegistry.connect(owner).setTokenWhitelist(ethers.constants.AddressZero, true)
-      ).to.be.revertedWith("Cannot whitelist zero address");
+      ).to.be.revertedWithCustomError(tokenRegistry, "ZeroAddress");
     });
   });
 
@@ -97,7 +96,7 @@ describe("TokenRegistry", () => {
       
       await expect(
         tokenRegistry.connect(owner).batchSetTokenWhitelist(tokens, statuses)
-      ).to.be.revertedWith("Array lengths must match");
+      ).to.be.revertedWithCustomError(tokenRegistry, "ArrayLengthMismatch");
     });
   });
 

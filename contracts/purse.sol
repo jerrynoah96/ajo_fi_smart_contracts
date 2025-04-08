@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.20;
+pragma solidity 0.8.29;
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
@@ -196,32 +196,32 @@ contract PurseContract is AccessControl, ReentrancyGuard {
      * @param _validator The validator address (can be address(0) if validators aren't required)
      */
     function joinPurse(uint256 _position, address _validator) external {
-        require(_position > 0 && _position <= purse.maxMembers, "Invalid position");
-        require(_position != adminPosition, "Admin position not available");
-        require(positionToMember[_position] == address(0), "Position already taken");
-        require(!members[msg.sender].hasJoined, "Already a member");
+        if (_position == 0 || _position > purse.maxMembers) revert InvalidPosition();
+        if (_position == adminPosition) revert PositionTaken();
+        if (positionToMember[_position] != address(0)) revert PositionTaken();
+        if (members[msg.sender].hasJoined) revert AlreadyMember();
         
         // Verify user has a validator if provided
         if (_validator != address(0)) {
             bool isValidatorContract = validatorFactory.isValidatorContract(_validator);
-            require(isValidatorContract == true, "Invalid validator");
+            if (isValidatorContract != true) revert InvalidValidator();
             
             // Check if validator has validated the user
             bool isValidated = IValidator(_validator).isUserValidated(msg.sender);
-            require(isValidated, "Not validated by validator");
+            if (!isValidated) revert UserNotValidated();
             
             // Get validator data and ensure token matches purse token
             IValidator.ValidatorData memory validatorData = IValidator(_validator).getValidatorData();
-            require(validatorData.stakedToken == address(token), "Validator token mismatch with purse token");
+            if (validatorData.stakedToken != address(token)) revert ValidatorNotEligible();
 
             // Check validator has enough tokens staked by checking its balance
-            require(IERC20(validatorData.stakedToken).balanceOf(_validator) >= purse.requiredCredits,
-                "Insufficient validator stake");
+            if (IERC20(validatorData.stakedToken).balanceOf(_validator) < purse.requiredCredits)
+                revert InsufficientCredits();
         }
         else {
             // For users without validators, check if they have staked the purse token
             (uint256 stakedAmount, , , ) = creditSystem.getUserTokenStakeInfo(msg.sender, address(token));
-            require(stakedAmount > 0, "Must stake purse token to join without validator");
+            if (stakedAmount == 0) revert InsufficientCredits();
         }
         
         // Commit user credits to this purse - this will check credit balance
@@ -261,8 +261,8 @@ contract PurseContract is AccessControl, ReentrancyGuard {
      * @dev Transfers tokens from sender to purse contract
      */
     function contribute() external {
-        require(token.allowance(msg.sender, address(this)) >= purse.contributionAmount, 
-            "Insufficient token allowance");
+        if (token.allowance(msg.sender, address(this)) < purse.contributionAmount)
+            revert InsufficientCredits();
         Member storage member = members[msg.sender];
         if (member.hasContributedCurrentRound) revert AlreadyContributed();
         if (block.timestamp < purse.lastContributionTime) revert TooEarlyForContribution();
@@ -288,7 +288,7 @@ contract PurseContract is AccessControl, ReentrancyGuard {
     function _distributePayout() internal {
         // Get recipient for this round
         address recipient = positionToMember[purse.currentRound];
-        require(recipient != address(0), "No recipient for this round");
+        if (recipient == address(0)) revert InvalidPosition();
         
         // Only transfer the actual contributed amounts from the purse
         if (purse.totalContributions > 0) {
@@ -302,11 +302,14 @@ contract PurseContract is AccessControl, ReentrancyGuard {
         emit PayoutDistributed(recipient, purse.totalContributions, purse.currentRound);
     }
 
+    /**
+     * @notice Start a new round after completing the current one
+     */
     function startNewRound() internal {
-            purse.currentRound++;
+        purse.currentRound++;
         purse.totalContributions = 0;
         defaulterPenalties = 0;  // Reset penalties for new round
-            purse.lastContributionTime = block.timestamp;
+        purse.lastContributionTime = block.timestamp;
 
         // Reset member states for new round
         for (uint256 i = 0; i < memberList.length; i++) {
@@ -375,9 +378,12 @@ contract PurseContract is AccessControl, ReentrancyGuard {
         _processAllDefaulters();
     }
 
-    // New function to process all defaulters at once
+    /**
+     * @notice Process all defaulters for the current round
+     * @dev Internal function to handle defaulters
+     */
     function _processAllDefaulters() internal nonReentrant {
-        require(!roundResolutionProcessed, "Round already resolved");
+        if (roundResolutionProcessed) revert ResolutionNotStarted();
         roundResolutionProcessed = true;
         address recipient = positionToMember[purse.currentRound];
         uint256 processedCount = 0;
@@ -412,13 +418,16 @@ contract PurseContract is AccessControl, ReentrancyGuard {
         
         // Track total penalties processed for accounting
         defaulterPenalties = defaulterPenalties + totalDefaultAmount;
-        require(defaulterPenalties >= totalDefaultAmount, "Overflow check");
+        if (defaulterPenalties < totalDefaultAmount) revert("Overflow check");
         
         // Finalize round resolution
         finalizeRoundResolution();
     }
 
-
+    /**
+     * @notice Finalize the round resolution process
+     * @dev Internal function that completes the resolution and starts a new round
+     */
     function finalizeRoundResolution() internal {
         if (!isProcessingDefaulters) revert ResolutionNotStarted();
         
@@ -437,6 +446,13 @@ contract PurseContract is AccessControl, ReentrancyGuard {
         startNewRound();
     }
 
+    /**
+     * @notice Get progress of the resolution process
+     * @return isProcessing Whether defaulters are being processed
+     * @return currentIndex Current processing index
+     * @return totalMembers Total number of members
+     * @return remainingToProcess Number of members left to process
+     */
     function getResolutionProgress() external view returns (
         bool isProcessing,
         uint256 currentIndex,
@@ -451,11 +467,15 @@ contract PurseContract is AccessControl, ReentrancyGuard {
         );
     }
 
+    /**
+     * @notice Validate state transitions
+     * @param _newState The new state to transition to
+     */
     function _validateStateTransition(PurseState _newState) internal view {
         if (_newState == PurseState.Active) {
-            require(purse.state == PurseState.Open, "Invalid state transition");
+            if (purse.state != PurseState.Open) revert InvalidPurseState(PurseState.Open, purse.state);
         } else if (_newState == PurseState.Completed) {
-            require(purse.state == PurseState.Active, "Invalid state transition");
+            if (purse.state != PurseState.Active) revert InvalidPurseState(PurseState.Active, purse.state);
         }
     }
 
