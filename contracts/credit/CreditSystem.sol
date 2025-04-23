@@ -52,6 +52,9 @@ contract CreditSystem is AccessControl, ReentrancyGuard, Pausable {
     // Add mapping for user-validator relationship
     mapping(address => address) public userValidators;
 
+    // Track validator defaulter history
+    mapping(address => mapping(address => uint256)) public validatorDefaulterHistory;
+
     // Events
     event LPStaked(
         address indexed user,
@@ -77,6 +80,7 @@ contract CreditSystem is AccessControl, ReentrancyGuard, Pausable {
         address indexed oldFactory,
         address indexed newFactory
     );
+    event DefaulterHistoryUpdated(address indexed validator, address indexed user, uint256 amount);
 
     // Add custom errors
     error NotAuthorizedPurse();
@@ -185,7 +189,7 @@ contract CreditSystem is AccessControl, ReentrancyGuard, Pausable {
         if (userCredits[_user] < _amount) revert InsufficientCredits();
 
         userCredits[_user] -= _amount;
-        emit CreditsReduced(_user, _amount, ''); // Empty reason for normal reduction
+        emit CreditsReduced(_user, _amount, ""); // Empty reason for normal reduction
     }
 
     function reduceCreditsForDefault(
@@ -208,6 +212,10 @@ contract CreditSystem is AccessControl, ReentrancyGuard, Pausable {
         );
         if (validatorAddress == address(0)) revert NoValidatorFound();
 
+        // Update defaulter history before reducing validator stake
+        validatorDefaulterHistory[validatorAddress][_user] += _amount;
+        emit DefaulterHistoryUpdated(validatorAddress, _user, _amount);
+
         // Reduce validator stake if user defaults
         IValidator(validatorAddress).handleDefaulterPenalty(
             _user,
@@ -215,7 +223,7 @@ contract CreditSystem is AccessControl, ReentrancyGuard, Pausable {
             _amount
         );
 
-        emit CreditsReduced(_user, _amount, 'Default penalty');
+        emit CreditsReduced(_user, _amount, "Default penalty");
     }
 
     function calculateLPCredits(
@@ -287,5 +295,18 @@ contract CreditSystem is AccessControl, ReentrancyGuard, Pausable {
             !hasRole(Roles.ADMIN_ROLE, msg.sender)
         ) revert NotAuthorized();
         userValidators[_user] = _validator;
+    }
+
+    /**
+     * @notice Get validator's default history for a user
+     * @param _validator Validator address
+     * @param _user User address
+     * @return Total default amount
+     */
+    function getValidatorDefaulterHistory(
+        address _validator,
+        address _user
+    ) external view returns (uint256) {
+        return validatorDefaulterHistory[_validator][_user];
     }
 }
