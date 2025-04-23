@@ -79,25 +79,24 @@ contract Validator is AccessControl, ReentrancyGuard {
         require(creditSystem.userCredits(data.owner) >= _creditAmount, "Insufficient validator credits");
         
         // Reduce validator's credits
-        creditSystem.reduceCredits(data.owner, _creditAmount);
+        creditSystem.reduceCredits(data.owner, actualCreditAmount);
         
         // Assign credits to user (minus fee)
         creditSystem.assignCredits(_user, actualCreditAmount);
         
-        // Keep fee amount as credits for validator
-        creditSystem.assignCredits(data.owner, feeAmount);
+    
         
         // Record validation
         validatedUsers[_user] = ValidationData({
             isValidated: true,
-            creditAmount: actualCreditAmount
+            creditAmount: _creditAmount
         });
         
         // Set validator relationship in credit system
         creditSystem.setUserValidator(_user, address(this));
         
         emit UserValidated(_user);
-        emit CreditsAssignedToUser(_user, actualCreditAmount);
+        emit CreditsAssignedToUser(_user, _creditAmount);
     }
 
     function invalidateUser(address _user) external onlyOwner {
