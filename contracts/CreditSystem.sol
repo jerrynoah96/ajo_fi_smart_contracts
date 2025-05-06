@@ -285,7 +285,7 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
         address _purse, 
         uint256 _amount, 
         address _validator
-    ) external {
+    ) external nonReentrant {
         require(
             authorizedFactories[msg.sender] || 
             authorizedPurses[msg.sender],
@@ -326,7 +326,7 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
         address _purse,
         uint256 _amount,
         address _recipient
-    ) external {
+    ) external nonReentrant {
         // Check that caller is an authorized purse
         if (!authorizedPurses[_purse]) revert NotAuthorizedPurse();
         
@@ -361,7 +361,7 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
      * @param _user User address
      * @param _purse Purse address
      */
-    function releasePurseCredits(address _user, address _purse) external  {
+    function releasePurseCredits(address _user, address _purse) external nonReentrant {
         require(
             authorizedPurses[msg.sender],
             "Not authorized purse"
@@ -463,7 +463,7 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
         address _validator,
         address _user,
         uint256 _amount
-    ) external {
+    ) external nonReentrant {
         // Only allow authorized factories (validators) to call this function
         require(authorizedFactories[msg.sender], "Not authorized");
         

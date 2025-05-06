@@ -70,9 +70,38 @@ contract Validator is AccessControl, ReentrancyGuard {
 
     function validateUser(address _user, uint256 _creditAmount) external onlyOwner {
         require(!validatedUsers[_user].isValidated, "User already validated");
+        // Prevent validators from validating themselves to avoid credit multiplication
+        require(_user != data.owner, "Cannot validate self");
         
-        // Calculate fee amount (feePercentage is in basis points)
-        uint256 feeAmount = (_creditAmount * data.feePercentage) / 10000;
+        // Calculate fee amount with higher precision to avoid rounding issues
+        // feePercentage is in basis points (1/100 of a percent, so 10000 = 100%)
+        uint256 feeAmount;
+        
+        if (_creditAmount >= 10000) {
+            // For larger amounts, standard calculation is precise enough
+            feeAmount = (_creditAmount * data.feePercentage) / 10000;
+        } else {
+            // For smaller amounts, use higher precision calculation
+            // Scale up by 1e18 for precision, then scale back down
+            uint256 scaledFee = (_creditAmount * data.feePercentage * 1e18) / 10000;
+            feeAmount = scaledFee / 1e18;
+            
+            // Round up if there's a remainder to ensure fee isn't undervalued
+            if (scaledFee % 1e18 > 0) {
+                feeAmount += 1;
+            }
+        }
+        
+        // Apply minimum fee if calculated fee is zero but there should be a fee
+        if (feeAmount == 0 && data.feePercentage > 0 && _creditAmount > 0) {
+            feeAmount = 1; // Minimum fee of 1 unit
+        }
+        
+        // Ensure fee doesn't exceed the credit amount in case of rounding up
+        if (feeAmount > _creditAmount) {
+            feeAmount = _creditAmount;
+        }
+        
         uint256 actualCreditAmount = _creditAmount - feeAmount;
         
         // Ensure validator has enough credits
@@ -84,8 +113,6 @@ contract Validator is AccessControl, ReentrancyGuard {
         // Assign credits to user (minus fee)
         creditSystem.assignCredits(_user, actualCreditAmount);
         
-    
-        
         // Record validation
         validatedUsers[_user] = ValidationData({
             isValidated: true,
@@ -96,7 +123,7 @@ contract Validator is AccessControl, ReentrancyGuard {
         creditSystem.setUserValidator(_user, address(this));
         
         emit UserValidated(_user);
-        emit CreditsAssignedToUser(_user, _creditAmount);
+        emit CreditsAssignedToUser(_user, actualCreditAmount);
     }
 
     function invalidateUser(address _user) external onlyOwner {
