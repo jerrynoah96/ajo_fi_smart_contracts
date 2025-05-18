@@ -228,6 +228,23 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
         emit FactoryDeauthorized(_factory);
     }
 
+    /**
+     * @notice Register a validator contract with enhanced security
+     * @dev This allows the validator factory to register validators without needing ADMIN_ROLE
+     * @param _validatorContract Address of the validator contract to authorize
+     */
+    function registerValidator(address _validatorContract) external {
+        require(
+            msg.sender == address(validatorFactory),
+            "Not authorized to register validators"
+        );
+        require(_validatorContract != address(0), "Invalid validator address");
+        
+        // Authorize the validator contract
+        authorizedFactories[_validatorContract] = true;
+        
+        emit FactoryAuthorized(_validatorContract);
+    }
    
     function setUserValidator(address _user, address _validator) external {
         // Check if validator factory is authorized
@@ -295,12 +312,7 @@ contract CreditSystem is AccessControl, ReentrancyGuard {
         // Ensure user has enough credits
         require(userCredits[_user] >= _amount, "Insufficient credits");
         
-        // Validate the validator if provided
-        if (_validator != address(0)) {
-            // Check if this is a valid validator contract
-            bool isValidatorContract = validatorFactory.isValidatorContract(_validator);
-            require(isValidatorContract == true, "Invalid validator");
-        }
+        
         // Reduce user's available credits
         userCredits[_user] -= _amount;
         

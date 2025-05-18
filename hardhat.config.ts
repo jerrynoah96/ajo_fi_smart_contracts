@@ -67,6 +67,14 @@ const config: HardhatUserConfig = {
       gas: 2100000,
       gasPrice: 8000000000,
       timeout: 60000
+    },
+    baseSepolia: {
+      url: process.env.BASE_SEPOLIA_URL || "https://sepolia.base.org",
+      accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
+      chainId: 84532,
+      gas: 2100000,
+      gasPrice: 8000000000,
+      timeout: 60000
     }
   },
   gasReporter: {

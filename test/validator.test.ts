@@ -13,6 +13,7 @@ describe("Validator", function() {
   let validatorOwner: SignerWithAddress;
   let user: SignerWithAddress;
   let admin: SignerWithAddress;
+  let newValidatorOwner: SignerWithAddress;
 
   // Helper function to setup a mock purse and commitments
   async function setupMockPurseAndCommitment(userAddr: string, amount: any, validatorAddr: string) {
@@ -27,7 +28,7 @@ describe("Validator", function() {
   }
 
   beforeEach(async function() {
-    [owner, user, admin, validatorOwner] = await ethers.getSigners();
+    [owner, user, admin, validatorOwner, newValidatorOwner] = await ethers.getSigners();
     
     // Deploy token
     const Token = await ethers.getContractFactory("MockERC20");
@@ -81,9 +82,6 @@ describe("Validator", function() {
     const validatorContractAddress = await validatorFactory.getValidatorContract(validatorOwner.address);
     const Validator = await ethers.getContractFactory("Validator");
     validator = Validator.attach(validatorContractAddress);
-    
-    // Authorize the validator contract in credit system since it needs to call setUserValidator
-    await creditSystem.connect(owner).authorizeFactory(validatorContractAddress, false);
   });
 
   it("should validate a user", async function() {
@@ -111,6 +109,21 @@ describe("Validator", function() {
     
     // Check user credits are back to 0
     expect(await creditSystem.userCredits(user.address)).to.equal(0);
+  });
+
+  it("should automatically authorize validator contract in credit system during creation", async function() {
+    // Get the validator contract address
+    const validatorContractAddress = await validatorFactory.getValidatorContract(validatorOwner.address);
+    
+    // Create a new user to validate, which will call setUserValidator from the validator contract
+    // This will fail if the validator is not authorized in the credit system
+    await validator.connect(validatorOwner).validateUser(admin.address, ethers.utils.parseEther("50"));
+    
+    // Check if user was successfully validated
+    expect(await validator.isUserValidated(admin.address)).to.be.true;
+    
+    // Verify the user validator relationship in the credit system
+    expect(await creditSystem.userValidators(admin.address)).to.equal(validatorContractAddress);
   });
 
   it("should allow validator to withdraw stake", async function() {
@@ -209,5 +222,45 @@ describe("Validator", function() {
     // The validator credits should remain unchanged when defaulter is the recipient
     const finalValidatorCredits = await creditSystem.userCredits(validatorOwner.address);
     expect(finalValidatorCredits).to.equal(initialValidatorCredits);
+  });
+
+  it("should allow factory to create validator and validator to validate user", async function() {
+    // Fund new validator owner with tokens
+    await token.connect(owner).transfer(newValidatorOwner.address, ethers.utils.parseEther("2000"));
+    
+    // Approve tokens for creating a validator
+    await token.connect(newValidatorOwner).approve(validatorFactory.address, ethers.utils.parseEther("1500"));
+    
+    // Create a new validator through the factory
+    await validatorFactory.connect(newValidatorOwner).createValidator(
+      100,  // fee percentage (1% - within allowed limit)
+      token.address, // staked token
+      ethers.utils.parseEther("1500") // initial stake amount
+    );
+    
+    // Get the new validator contract
+    const newValidatorContractAddress = await validatorFactory.getValidatorContract(newValidatorOwner.address);
+    const ValidatorContract = await ethers.getContractFactory("Validator");
+    const newValidator = ValidatorContract.attach(newValidatorContractAddress);
+    
+    // Verify validator is registered in the system
+    expect(await validatorFactory.isValidatorContract(newValidatorContractAddress)).to.be.true;
+    
+    // Verify validator has been given appropriate credits
+    expect(await creditSystem.userCredits(newValidatorOwner.address)).to.equal(ethers.utils.parseEther("1500"));
+    
+    // New validator validates a user
+    await newValidator.connect(newValidatorOwner).validateUser(admin.address, ethers.utils.parseEther("200"));
+    
+    // Check if user is validated
+    expect(await newValidator.isUserValidated(admin.address)).to.be.true;
+    
+    // Check user credits (1% fee means user gets 99% of credits)
+    const expectedCredits = ethers.utils.parseEther("200").mul(9900).div(10000); // 99%
+    expect(await creditSystem.userCredits(admin.address)).to.equal(expectedCredits);
+    
+    // Verify the user validator relationship in the credit system
+    expect(await creditSystem.userValidators(admin.address)).to.equal(newValidatorContractAddress);
+    expect(await creditSystem.isUserValidatedBy(admin.address, newValidatorContractAddress)).to.be.true;
   });
 }); 

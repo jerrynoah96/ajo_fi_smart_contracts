@@ -67,6 +67,14 @@ contract PurseFactory is AccessControl {
         id_to_purse[address(newPurse)] = purse_count;
         purseToChatId[address(newPurse)] = 0; // Assuming chatId is set to 0 for this function
 
+        // Commit the creator's credits to the purse (crucial security step)
+        creditSystem.commitCreditsToPurse(
+            msg.sender,
+            address(newPurse),
+            _contribution_amount,
+            _validator
+        );
+
         emit PurseCreated(address(newPurse), msg.sender);
         return address(newPurse);
     }

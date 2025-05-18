@@ -111,6 +111,9 @@ contract ValidatorFactory is AccessControl, ReentrancyGuard {
 
         validatorContracts[msg.sender] = address(validator);
         validatorList.push(msg.sender);
+        
+        // Authorize the validator contract in the credit system
+        creditSystem.registerValidator(address(validator));
 
         emit ValidatorCreated(
             msg.sender,

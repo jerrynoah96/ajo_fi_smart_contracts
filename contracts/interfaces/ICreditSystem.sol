@@ -27,4 +27,10 @@ interface ICreditSystem {
         uint256 creditsIssued,
         address token
     );
+    
+    // Admin function to authorize factory contracts
+    function authorizeFactory(address _factory, bool _isValidatorFactory) external;
+    
+    // Function for validator factory to register validator contracts
+    function registerValidator(address _validatorContract) external;
 } 
